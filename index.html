@@ -1,0 +1,928 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>JurEditPro Excellence — Redação Jurídica com IA</title>
+  <meta name="description" content="Redação jurídica acadêmica com Claude + Gemini 2.5 Flash — ABNT, notas de rodapé, exportação .docx"/>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27><text y=%27.9em%27 font-size=%2790%27>⚖️</text></svg>"/>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body,#root{height:100%;width:100%;overflow:hidden}
+    body{font-family:Georgia,serif;background:#f5f1ea}
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useRef, useEffect, useCallback } = React;
+
+
+// ══════════════════════════════════════════════
+// ZIP + DOCX ENGINE
+// ══════════════════════════════════════════════
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) { let c = i; for (let j = 0; j < 8; j++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[i] = c; }
+  return t;
+})();
+const crc32 = d => { let c = 0xFFFFFFFF; for (let i = 0; i < d.length; i++) c = CRC_TABLE[(c ^ d[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+const s2u = s => new TextEncoder().encode(s);
+const cat = a => { const t = a.reduce((s, x) => s + x.length, 0), o = new Uint8Array(t); let p = 0; for (const x of a) { o.set(x, p); p += x.length; } return o; };
+const u16 = (b, o, v) => { b[o] = v & 0xFF; b[o + 1] = (v >> 8) & 0xFF; };
+const u32 = (b, o, v) => { b[o] = v & 0xFF; b[o + 1] = (v >> 8) & 0xFF; b[o + 2] = (v >> 16) & 0xFF; b[o + 3] = (v >> 24) & 0xFF; };
+
+function buildZip(files) {
+  const lp = [], cd = []; let off = 0;
+  for (const f of files) {
+    const nm = s2u(f.name), dt = f.data, cr = crc32(dt), sz = dt.length;
+    const lh = new Uint8Array(30 + nm.length);
+    u32(lh, 0, 0x04034b50); u16(lh, 4, 20); u32(lh, 14, cr); u32(lh, 18, sz); u32(lh, 22, sz); u16(lh, 26, nm.length); lh.set(nm, 30);
+    const ce = new Uint8Array(46 + nm.length);
+    u32(ce, 0, 0x02014b50); u16(ce, 4, 20); u16(ce, 6, 20); u32(ce, 16, cr); u32(ce, 20, sz); u32(ce, 24, sz); u16(ce, 28, nm.length); u32(ce, 42, off); ce.set(nm, 46);
+    lp.push(lh, dt); cd.push(ce); off += lh.length + sz;
+  }
+  const cdd = cat(cd), eo = new Uint8Array(22);
+  u32(eo, 0, 0x06054b50); u16(eo, 8, files.length); u16(eo, 10, files.length); u32(eo, 12, cdd.length); u32(eo, 16, off);
+  return cat([...lp, cdd, eo]);
+}
+
+const esc = s => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const FONT = `<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/>`;
+
+function wRun(r, pt = 12) {
+  const sz = pt * 2;
+  const rpr = [r.bold ? "<w:b/><w:bCs/>" : "", r.italic ? "<w:i/><w:iCs/>" : "", FONT, `<w:sz w:val="${sz}"/><w:szCs w:val="${sz}"/>`].join("");
+  return `<w:r><w:rPr>${rpr}</w:rPr><w:t xml:space="preserve">${esc(r.text)}</w:t></w:r>`;
+}
+function wPara(runs, o = {}) {
+  const al = o.center ? "center" : (o.align || "both");
+  let ind = o.indent ? `<w:ind w:firstLine="${o.indent}"/>` : o.indL ? `<w:ind w:left="${o.indL}" w:right="${o.indR || 0}"/>` : "";
+  const ppr = `<w:pPr><w:spacing w:before="${o.sb || 0}" w:after="${o.sa || 60}" w:line="${o.lv || 276}" w:lineRule="auto"/>${ind}<w:jc w:val="${al}"/></w:pPr>`;
+  return `<w:p>${ppr}${runs.map(r => wRun(r, o.pt || 12)).join("")}</w:p>`;
+}
+const emptyP = () => `<w:p><w:pPr><w:spacing w:before="0" w:after="60"/></w:pPr></w:p>`;
+
+function parseInline(str) {
+  const out = [], re = /(\*\*[^*]+\*\*|\*[^*]+\*)/g; let last = 0, m;
+  str = str.replace(/\[Fonte:[^\]]+\]/g, "");
+  while ((m = re.exec(str)) !== null) {
+    if (m.index > last) out.push({ text: str.slice(last, m.index), bold: false, italic: false });
+    const tok = m[0];
+    if (/^\*\*/.test(tok)) out.push({ text: tok.slice(2, -2), bold: true, italic: false });
+    else out.push({ text: tok.slice(1, -1), bold: false, italic: true });
+    last = m.index + tok.length;
+  }
+  if (last < str.length) out.push({ text: str.slice(last), bold: false, italic: false });
+  return out.filter(r => r.text);
+}
+
+async function gerarDocx(rawText, nomeLivro, proj) {
+  const lines = rawText.split("\n");
+  const ni = lines.findIndex(l => /^②\s*NOTAS/i.test(l.trim()));
+  const body = ni > -1 ? lines.slice(0, ni) : lines;
+  const notes = ni > -1 ? lines.slice(ni + 1) : [];
+  const fnMap = {};
+  for (const ln of notes) {
+    const raw = ln.trim(); if (!raw) continue;
+    const m = raw.match(/^([⁰¹²³⁴⁵⁶⁷⁸⁹]+|\d{1,2})[.\)\s]\s*(.+)/);
+    if (m) { const n = parseInt(m[1]) || [...m[1]].reduce((a, c) => a * 10 + "⁰¹²³⁴⁵⁶⁷⁸⁹".indexOf(c), 0); if (n > 0) fnMap[n] = m[2]; }
+  }
+  const paras = [emptyP(), emptyP()];
+  if (proj?.nome) {
+    paras.push(wPara([{ text: proj.nome, bold: true, italic: false }], { center: true, pt: 20, sb: 60, sa: 120, lv: 280 }));
+    if (proj.area) paras.push(wPara([{ text: proj.area, bold: false, italic: true }], { center: true, pt: 11, sa: 80, lv: 240 }));
+    paras.push(emptyP(), emptyP());
+  }
+  for (const line of body) {
+    const raw = line.trim();
+    if (!raw) { paras.push(emptyP()); continue; }
+    if (/^-{3,}$/.test(raw)) { paras.push(`<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="4" w:space="4" w:color="888888"/></w:pBdr><w:spacing w:before="120" w:after="120"/></w:pPr></w:p>`); continue; }
+    if (/^EMENTA_CAP:/i.test(raw)) { paras.push(wPara([{ text: raw.replace(/^EMENTA_CAP:\s*/i, ""), bold: false, italic: true }], { align: "both", pt: 10, sa: 0, lv: 240, indL: 1440, indR: 1440 })); continue; }
+    if (raw === raw.toUpperCase() && /[A-ZÁÉÍÓÚ]{4,}/.test(raw) && raw.length > 4 && !/^\d/.test(raw) && !/^[①②③]/.test(raw)) { paras.push(wPara([{ text: raw, bold: true, italic: false }], { center: true, pt: 14, sb: 0, sa: 360, lv: 240 })); continue; }
+    if (/^\*\*[^*]+\*\*$/.test(raw)) { paras.push(wPara([{ text: raw.replace(/\*\*/g, ""), bold: true, italic: false }], { align: "left", pt: 12, sb: 420, sa: 180, lv: 276 })); continue; }
+    if (/^#{1,3}\s/.test(raw)) { paras.push(wPara([{ text: raw.replace(/^#+\s/, ""), bold: true, italic: false }], { align: "left", pt: 12, sb: 420, sa: 180, lv: 276 })); continue; }
+    if (/^>\s*/.test(raw)) { paras.push(wPara(parseInline(raw.replace(/^>\s*/, "")), { align: "both", pt: 9, sb: 120, sa: 120, lv: 240, indL: 709, indR: 709 })); continue; }
+    if (/^[①②③④⑤]/.test(raw) || /^(NOTAS?\s*DE\s*RODAP|REFERÊNCIAS|AVALIAÇÃO)/i.test(raw)) continue;
+    paras.push(wPara(parseInline(raw), { align: "both", pt: 12, indent: 709, sb: 0, sa: 60, lv: 276 }));
+  }
+  const hTxt = esc((nomeLivro || "JurEditPro").slice(0, 80));
+  const fnEntries = Object.entries(fnMap).sort((a, b) => Number(a[0]) - Number(b[0]));
+  const footnotesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>
+<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>
+${fnEntries.map(([id, text]) => `<w:footnote w:id="${id}"><w:p><w:pPr><w:jc w:val="both"/></w:pPr><w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteRef/></w:r><w:r><w:rPr>${FONT}<w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr><w:t xml:space="preserve"> ${esc(text)}</w:t></w:r></w:p></w:footnote>`).join("\n")}
+</w:footnotes>`;
+  const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${paras.join("")}<w:sectPr><w:headerReference w:type="default" r:id="rH1"/><w:footerReference w:type="default" r:id="rF1"/><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1800" w:right="1800" w:bottom="1800" w:left="1800" w:header="708" w:footer="708"/></w:sectPr></w:body></w:document>`;
+  const headerXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:jc w:val="right"/><w:pBdr><w:bottom w:val="single" w:sz="4" w:space="4" w:color="888888"/></w:pBdr></w:pPr><w:r><w:rPr><w:i/><w:sz w:val="16"/><w:szCs w:val="16"/>${FONT}</w:rPr><w:t>${hTxt}</w:t></w:r></w:p></w:hdr>`;
+  const footerXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> PAGE </w:instrText></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:ftr>`;
+  const rD = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/><Relationship Id="rH1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/><Relationship Id="rF1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/></Relationships>`;
+  const rR = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`;
+  const ct = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/><Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/><Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/></Types>`;
+  const st = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr>${FONT}<w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr></w:rPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:pPr><w:jc w:val="both"/></w:pPr></w:style><w:style w:type="character" w:styleId="FootnoteReference"><w:name w:val="footnote reference"/><w:rPr><w:vertAlign w:val="superscript"/></w:rPr></w:style></w:styles>`;
+  const se = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:defaultTabStop w:val="709"/></w:settings>`;
+  const files = [
+    { name: "[Content_Types].xml", data: s2u(ct) }, { name: "_rels/.rels", data: s2u(rR) },
+    { name: "word/document.xml", data: s2u(docXml) }, { name: "word/styles.xml", data: s2u(st) },
+    { name: "word/settings.xml", data: s2u(se) }, { name: "word/header1.xml", data: s2u(headerXml) },
+    { name: "word/footer1.xml", data: s2u(footerXml) }, { name: "word/_rels/document.xml.rels", data: s2u(rD) },
+    { name: "word/footnotes.xml", data: s2u(footnotesXml) },
+  ];
+  const zip = buildZip(files);
+  let bin = ""; const chunk = 8192;
+  for (let i = 0; i < zip.length; i += chunk) bin += String.fromCharCode(...zip.subarray(i, i + chunk));
+  const b64 = btoa(bin);
+  const slug = (nomeLivro || "JurEditPro").replace(/[^a-zA-Z0-9]/g, "_").slice(0, 28);
+  const fname = slug + "_" + new Date().toISOString().slice(0, 10) + ".docx";
+  const dataUri = "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64," + b64;
+  let url; try { url = URL.createObjectURL(new Blob([zip], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" })); } catch (_) { url = dataUri; }
+  const a = document.createElement("a"); a.href = url; a.download = fname; a.style.display = "none";
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { document.body.removeChild(a); if (url !== dataUri) URL.revokeObjectURL(url); }, 1000);
+  return { dataUri, filename: fname };
+}
+
+// ══════════════════════════════════════════════
+// MOTORES DE IA
+// Motor A: Claude via Anthropic API (padrão — funciona sem chave no Claude.ai)
+// Motor B: Gemini 2.5 Flash (opcional — requer chave Google AI Studio)
+// ══════════════════════════════════════════════
+
+async function chamarClaude(messages, system, onStatus) {
+  const WAITS = [15, 30, 60];
+  for (let t = 0; t <= 3; t++) {
+    if (t > 0) {
+      for (let s = WAITS[t - 1]; s > 0; s--) {
+        onStatus?.(`Aguardando ${s}s (tentativa ${t + 1}/4)...`);
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+    onStatus?.(t === 0 ? "⚖️ Claude Sonnet gerando texto..." : `🔄 Tentativa ${t + 1}/4...`);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 16000,
+          system,
+          messages,
+        }),
+      });
+      if (res.status === 529 || res.status === 503) { if (t < 3) continue; throw new Error("API sobrecarregada. Tente novamente."); }
+      if (res.status === 429) { for (let s = 30; s > 0; s--) { onStatus?.(`Rate limit — ${s}s...`); await new Promise(r => setTimeout(r, 1000)); } t--; continue; }
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(`Erro ${res.status}: ${e?.error?.message || res.statusText}`); }
+      const data = await res.json();
+      const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("").trim();
+      if (text) { onStatus?.(""); return text; }
+      if (t < 3) continue;
+      throw new Error("Resposta vazia.");
+    } catch (e) { if (t === 3) throw e; }
+  }
+  throw new Error("Falha após 4 tentativas.");
+}
+
+async function chamarGemini(messages, system, apiKey, onStatus) {
+  if (!apiKey?.trim()) throw new Error("Cole a chave do Google AI Studio nas configurações.");
+  // Modelos Gemini 2025 — ordem: mais recente → fallback (antigos estão sendo desativados)
+  const MODELS = [
+    "gemini-2.5-flash",                   // ✅ GA estável — principal
+    "gemini-2.5-flash-preview-05-20",     // preview anterior — fallback
+    "gemini-2.0-flash",                   // fallback seguro
+  ];
+  const WAITS = [15, 30, 60];
+  for (const model of MODELS) {
+    for (let t = 0; t <= 2; t++) {
+      if (t > 0) { for (let s = WAITS[t - 1]; s > 0; s--) { onStatus?.(`Gemini ${model} — aguardando ${s}s...`); await new Promise(r => setTimeout(r, 1000)); } }
+      onStatus?.(`🔮 Gemini (${model}) gerando...`);
+      try {
+        const contents = messages.map(m => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey.trim()}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents,
+              systemInstruction: { parts: [{ text: system }] },
+              generationConfig: { maxOutputTokens: 8192, temperature: 0.75 },
+            }),
+          }
+        );
+        if (res.status === 404) break; // modelo não existe, tenta o próximo
+        if (res.status === 429) { if (t < 2) continue; break; }
+        if (res.status === 400) {
+          const e = await res.json().catch(() => ({}));
+          // Se é erro de chave, lança imediatamente
+          if (e?.error?.status === "INVALID_ARGUMENT" || e?.error?.message?.includes("API_KEY")) {
+            throw new Error("Chave Gemini inválida. Verifique em aistudio.google.com/apikey");
+          }
+          break;
+        }
+        if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(`Gemini ${res.status}: ${e?.error?.message || res.statusText}`); }
+        const data = await res.json();
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        if (text) { onStatus?.(""); return text; }
+        break;
+      } catch (e) {
+        if (e.message.includes("Failed to fetch")) {
+          throw new Error("Gemini bloqueado neste ambiente. Use o motor Claude (padrão) — funciona sem chave. O Gemini requer acesso externo que pode estar bloqueado aqui.");
+        }
+        if (t === 2) throw e;
+      }
+    }
+  }
+  throw new Error("Nenhum modelo Gemini disponível. Tente o motor Claude.");
+}
+
+// ══════════════════════════════════════════════
+// CONFIGURAÇÃO
+// ══════════════════════════════════════════════
+const TIPOS_DOC = [
+  { ic: "📚", id: "livro",    l: "Livro / Tratado",   desc: "Capítulo acadêmico · ABNT · notas rodapé reais",   cor: "#7c3aed" },
+  { ic: "📋", id: "sumario",  l: "Sumário",           desc: "Estrutura numerada completa do tratado",           cor: "#0369a1" },
+  { ic: "⚖️", id: "parecer",  l: "Parecer Jurídico",  desc: "Ementa · relatório · fundamentação · conclusão",   cor: "#b45309" },
+  { ic: "📄", id: "peticao",  l: "Petição",           desc: "Fatos · direito · pedidos · formato judicial",     cor: "#0f766e" },
+  { ic: "🎓", id: "artigo",   l: "Artigo Científico", desc: "Qualis A2 · resumo · referências ABNT",            cor: "#be185d" },
+  { ic: "📖", id: "apostila", l: "Apostila",          desc: "Módulos didáticos · exercícios · gabarito",        cor: "#15803d" },
+  { ic: "📃", id: "ementa",   l: "Ementa Jurídica",   desc: "Síntese técnica de decisão judicial",              cor: "#c2410c" },
+  { ic: "📝", id: "contrato", l: "Cláusulas",         desc: "Minutas contratuais prontas para uso",             cor: "#1d4ed8" },
+];
+
+const TRIBUNAIS = [
+  { l: "STF",       url: "https://jurisprudencia.stf.jus.br/pages/search?base=acordaos&query=" },
+  { l: "STJ",       url: "https://scon.stj.jus.br/SCON/pesquisar.jsp?q=" },
+  { l: "TCU",       url: "https://pesquisa.apps.tcu.gov.br/resultado/jurisprudencia/" },
+  { l: "TRF1",      url: "https://portal.trf1.jus.br/portaltrf1/jurisprudencia/pesquisar-jurisprudencia.htm?q=" },
+  { l: "TRF2",      url: "https://www10.trf2.jus.br/portal/?q=" },
+  { l: "TRF3",      url: "https://web.trf3.jus.br/base-textual/Home/ListaDecisao/1?np=0&q=" },
+  { l: "TRF4",      url: "https://jurisprudencia.trf4.jus.br/pesquisa/pesquisa.php?tipo=1&q=" },
+  { l: "TRF5",      url: "https://www4.trf5.jus.br/Jurisprudencia/?q=" },
+  { l: "BDjur",     url: "https://bdjur.stj.jus.br/jspui/simple-search?query=" },
+  { l: "LexML",     url: "https://www.lexml.gov.br/busca/find?query=" },
+  { l: "Legislação", url: "https://www.planalto.gov.br/busca/?q=" },
+  { l: "TJDFT",     url: "https://pesquisajuris.tjdft.jus.br/IndexadorAcordaos-web/sistj?visaoId=tjdf.sistj.acordaoeletronico.buscaindexada.apresentacao.VisaoBuscaAcordaoGet&nomePagina=buscaLivre&internet=1&numeroDoDocumento=&parametros.baseSelecionada=BASE_ACORDAO_TODAS&parametros.texto=" },
+];
+
+const AREAS = ["Direito Administrativo", "Direito Constitucional", "Direito Civil", "Direito Penal", "Direito do Trabalho", "Direito Tributário", "Direito Processual Civil", "Direito Empresarial", "Direito Ambiental", "Direito do Consumidor", "Direito Previdenciário", "Direito Digital", "Direito Internacional"];
+
+function buildSys(area, nivel, proj) {
+  return `Você é JurEditPro Excellence — redator jurídico de máximo padrão acadêmico.
+PROJETO: "${proj?.nome || ""}" | ÁREA: ${area} | NÍVEL: ${nivel}
+REFERÊNCIA DE ESTILO: ${proj?.autores || "Marinoni, Di Pietro, Celso Antônio Bandeira de Mello, Didier Jr."}
+
+══ PADRÃO TIPOGRÁFICO OBRIGATÓRIO ══
+• Times New Roman 12pt · ABNT 2024 · entrelinhas 1,5 · recuo de primeira linha 1,25cm
+• Seções em **negrito sem numeração arábica** — ex: **Conceito e Natureza Jurídica**
+• Notas de rodapé: superscript ¹²³ COLADO à palavra — ex: Di Pietro¹ sustenta
+• Citações em bloco: > *EMENTA: texto. (STJ, REsp X/UF, Rel. Min. Nome, Nª Turma, DJe data.)*
+• Voz impessoal: "cumpre observar", "não se pode olvidar", "é de se notar", "destarte"
+• Doutrina integrada: "MARINONI, em *Teoria Geral do Processo*¹, sustenta que..."
+
+══ INTEGRIDADE ACADÊMICA ABSOLUTA ══
+✗ NUNCA invente número de processo, relator, data, ementa ou página de obra
+✗ Se dado não confirmado → use "a doutrina majoritária sustenta..." (sem citar autoria inventada)
+✗ Jurisprudência só com: número + relator + data + ementa — tudo verificado
+✓ Se em dúvida sobre dado → omita a referência específica, não invente
+
+══ REGRAS DE OURO ══
+✓ NUNCA corte o texto — entregue COMPLETO de uma vez
+✓ NUNCA faça perguntas — redija diretamente
+✓ Mínimo 25 notas (capítulos) · 15 (artigos) · 12 (pareceres)
+✓ Seção ② NOTAS DE RODAPÉ ao final com TODAS as notas usadas no corpo
+✓ Padrão máximo de densidade argumentativa e desenvolvimento doutrinário`;
+}
+
+function buildPrompt(tipo, problema, tema, area, nivel, proj) {
+  const ctx = problema
+    ? `\n══ PROBLEMA / CONTEXTO FORNECIDO PELO USUÁRIO ══\n${problema}\n\nEste problema/contexto deve ser a BASE e o FIO CONDUTOR de todo o desenvolvimento. O texto deve responder diretamente às questões levantadas acima.\n`
+    : "";
+  const h = `${ctx}\nÁrea: ${area} | Nível: ${nivel} | Projeto: "${proj?.nome || ""}"\n\n`;
+
+  const ps = {
+    livro: `${h}TEMA: ${tema}\n\nGere capítulo COMPLETO de tratado jurídico acadêmico.\n\nESTRUTURA OBRIGATÓRIA:\nCapítulo [N]\nTÍTULO DO CAPÍTULO EM CAIXA ALTA E NEGRITO\nEMENTA_CAP: [subtemas separados por ponto]\n---\n\n**Abertura — Contextualização e Problema Central**\n[3 parágrafos obrigatórios: §1 contexto normativo vigente · §2 problema dogmático central · §3 plano do capítulo]\n\n**Conceito, Natureza Jurídica e Delimitação Dogmática**\n[4+ parágrafos com notas ¹²³ · definição precisa · natureza jurídica · distinção de institutos afins]\n\n**Regime Jurídico: Requisitos, Elementos e Efeitos**\n[4+ parágrafos · legislação vigente 2025 · requisitos · elementos · efeitos jurídicos]\n\n**Análise Jurisprudencial STJ e STF (2020–2025)**\n> *EMENTA: [resumo]. (STJ, REsp X.XXX/UF, Rel. Min. Nome, Nª Turma, DJe DD.MM.AAAA.)*\n§ Contexto e instâncias anteriores\n§ Ratio decidendi e tese fixada\n§ Impacto sistêmico para credores · devedores · operadores\n[Mínimo 4 precedentes com essa estrutura]\n\n**Controvérsias Doutrinárias e Tendências 2025**\n[3+ parágrafos · debates abertos · legislação em tramitação · perspectiva comparada]\n\nSíntese do Capítulo\n[§1 primeira conclusão estruturante · §2 segunda conclusão · §3 perspectiva para próximo capítulo]\n\n② NOTAS DE RODAPÉ\n¹ Prenome Sobrenome, *Título da Obra*, N. ed., Cidade, Editora, ano, p. XX.\n[MÍNIMO 25 NOTAS — lista completa de todas usadas no corpo]\n\n④ AVALIAÇÃO TÉCNICA\nCritérios (0–10): rigor técnico | clareza | coesão | progressão argumentativa | qualidade das fontes | estilo | originalidade`,
+
+    sumario: `${h}OBRA: ${tema}\n\nGere SUMÁRIO COMPLETO, DETALHADO E PROFISSIONAL.\n\nREGRAS ABSOLUTAS:\n• Numeração ABNT (1 / 1.1 / 1.1.1 / 1.1.1.1)\n• Mínimo 10 capítulos · 5-6 seções por capítulo · 3-4 subseções por seção\n• Títulos REAIS e ESPECÍFICOS ao tema — nunca genéricos\n• Páginas estimadas ponteadas: 1.1 Conceito e Definição......................15\n• Seções pré-textuais: Resumo/Abstract · Introdução\n• Seções pós-textuais: Considerações Finais · Referências\n• Progressão lógica entre capítulos\n\nAo final do sumário, obrigatoriamente:\n\`\`\`CAPITULOS\n1|Título exato do Capítulo 1\n2|Título exato do Capítulo 2\n...\n\`\`\``,
+
+    parecer: `${h}QUESTÃO JURÍDICA: ${tema}\n\nElabore PARECER JURÍDICO COMPLETO de alto padrão.\n\nESTRUTURA:\nEMENTA\n[5-8 linhas em maiúsculas · síntese técnica da questão e conclusão]\n\nI — RELATÓRIO\n[Qualificação do consulente · exposição da questão · documentos examinados · delimitação do objeto]\n\nII — FUNDAMENTAÇÃO JURÍDICA\n**1. Análise do Quadro Normativo**\n[legislação federal · estadual · infralegal vigentes em 2025]\n**2. Posicionamento Doutrinário**\n[correntes com notas ¹²³ · doutrina majoritária e minoritária]\n**3. Jurisprudência dos Tribunais Superiores**\n[STJ/STF/TCU · ementas em bloco > · análise da ratio decidendi]\n**4. Síntese e Conclusão Fundamentada**\n[resposta objetiva e precisa à questão formulada]\n\nIII — CONCLUSÃO\n[Respostas numeradas às questões · recomendações práticas]\n\n② NOTAS DE RODAPÉ [mínimo 20]`,
+
+    peticao: `${h}OBJETO DA AÇÃO: ${tema}\n\nRedije PETIÇÃO JURÍDICA COMPLETA.\n\nEXCELENTÍSSIMO SENHOR DOUTOR JUIZ DE DIREITO DA [VARA] DA COMARCA DE [CIDADE]\n\n[NOME DA PARTE], [qualificação completa — nacionalidade, estado civil, profissão, CPF/CNPJ, endereço], vem, respeitosamente, à presença de Vossa Excelência, por seu advogado (instrumento de mandato em anexo), com fulcro [base legal], propor a presente\n\nAÇÃO [TIPO COMPLETO]\n\nem face de [NOME DO RÉU], pelos fatos e fundamentos a seguir expostos:\n\nI — DOS FATOS\n[Narrativa cronológica · clara · precisa · documentada]\n\nII — DO DIREITO\n**1. Da Legitimidade e do Interesse de Agir**\n**2. Do Mérito — Fundamento Legal**\n[artigos vigentes com texto]\n**3. Do Mérito — Fundamento Doutrinário** [notas ¹²³]\n**4. Da Jurisprudência Aplicável**\n[precedentes STJ/STF · ementa em bloco]\n\nIII — DOS PEDIDOS\nAnte o exposto, requer a Vossa Excelência:\na) O recebimento e processamento da presente ação;\nb) [Pedido principal completo e específico];\nc) [Pedidos cumulados ou alternativos];\nd) A condenação em honorários e custas.\n\nDá-se à causa o valor de R$ [valor] ([valor por extenso]).\n\n[Local], [data].\n[Nome do Advogado]\nOAB/[UF] nº XXXXX\n\n② NOTAS DE RODAPÉ [mínimo 15]`,
+
+    artigo: `${h}TEMA: ${tema}\n\nEscreva ARTIGO CIENTÍFICO JURÍDICO COMPLETO (padrão Qualis A2 CAPES).\n\nTÍTULO EM MAIÚSCULAS\nSubtítulo em minúsculas (se houver)\n\nResumo\n[150-250 palavras: problema · metodologia · desenvolvimento · conclusões]\nPalavras-chave: [5-7 descritores separados por ponto e vírgula]\n\nAbstract\n[Tradução fiel do resumo]\nKeywords: [tradução das palavras-chave]\n\n1 INTRODUÇÃO\n[Contextualização · problema · hipótese · justificativa · metodologia · estrutura]\n\n2 [SEÇÃO PRINCIPAL]\n2.1 [Conceito e base normativa]\n2.2 [Desenvolvimento teórico]\n2.3 [Análise jurisprudencial]\n2.4 [Controvérsias e perspectivas]\n\n3 [SEÇÃO COMPLEMENTAR]\n3.1 [Aspectos práticos]\n3.2 [Direito comparado]\n\n4 CONSIDERAÇÕES FINAIS\n[Respostas às hipóteses · contribuições · limitações · pesquisas futuras]\n\nREFERÊNCIAS\n[ABNT NBR 6023:2018 — mínimo 20 referências completas]\n\n② NOTAS DE RODAPÉ`,
+
+    apostila: `${h}TEMA: ${tema}\n\nCrie APOSTILA JURÍDICA DIDÁTICA COMPLETA.\n\nAPRESENTAÇÃO\n[Contextualização do tema · público-alvo · metodologia]\n\nOBJETIVOS DE APRENDIZAGEM\n[6-8 objetivos mensuráveis]\n\nMÓDULO 1 — FUNDAMENTOS\n1.1 Conceito e definição\n1.2 Evolução histórica e legislativa\n1.3 Base legal vigente (2025)\n1.4 Exemplos práticos comentados\n1.5 Jurisprudência essencial\n📌 MAPA MENTAL do módulo\n\nMÓDULO 2 — REGIME JURÍDICO\n[Mesma estrutura — profundidade maior]\n\nMÓDULO 3 — APLICAÇÃO PRÁTICA\n[Casos concretos · exercícios resolvidos]\n\nMÓDULO 4 — JURISPRUDÊNCIA COMENTADA\n[5+ precedentes comentados didaticamente]\n\nEXERCÍCIOS DE FIXAÇÃO\n[10 questões dissertativas com enunciados completos]\n\nGABARITO COMENTADO\n[Respostas fundamentadas para cada questão]\n\nREFERÊNCIAS`,
+
+    ementa: `${h}OBJETO: ${tema}\n\nRedije EMENTA JURÍDICA técnica e precisa (modelo STJ).\n\nFORMATO OBRIGATÓRIO (parágrafo único, sem subdivisões):\n[ÁREA DO DIREITO EM MAIÚSCULAS]. [Subtema específico]. [Delimitação da questão jurídica]. [Tese firmada com precisão técnica]. [Fundamento normativo: art. X da Lei Y]. [Resultado da análise]. [Dispositivo: provido/improvido/parcialmente provido — se aplicável].\n\nMáximo 15 linhas · linguagem técnica precisa · sem parágrafos separados · sem bullet points.`,
+
+    contrato: `${h}OBJETO: ${tema}\n\nElabore MINUTA CONTRATUAL COMPLETA com cláusulas juridicamente robustas.\n\n[TIPO DE INSTRUMENTO CONTRATUAL]\n\nPelo presente instrumento particular, e na melhor forma de direito, as partes a seguir qualificadas:\n\nCONTRATANTE: [Nome] · [tipo jurídico] · CNPJ/CPF · [endereço] · doravante denominado simplesmente CONTRATANTE;\nCONTRATADA: [Nome] · [tipo jurídico] · CNPJ/CPF · [endereço] · doravante denominada simplesmente CONTRATADA;\n\nresolvem celebrar o presente contrato, que se regerá pelas cláusulas e condições seguintes:\n\nCLÁUSULA PRIMEIRA — DO OBJETO E DO ESCOPO\nCLÁUSULA SEGUNDA — DAS OBRIGAÇÕES DA CONTRATANTE\nCLÁUSULA TERCEIRA — DAS OBRIGAÇÕES DA CONTRATADA\nCLÁUSULA QUARTA — DO PRAZO DE VIGÊNCIA E PRORROGAÇÃO\nCLÁUSULA QUINTA — DO VALOR E DAS CONDIÇÕES DE PAGAMENTO\nCLÁUSULA SEXTA — DAS HIPÓTESES DE RESCISÃO\nCLÁUSULA SÉTIMA — DAS PENALIDADES E MULTAS\nCLÁUSULA OITAVA — DA PROPRIEDADE INTELECTUAL E CONFIDENCIALIDADE\nCLÁUSULA NONA — DAS DISPOSIÇÕES GERAIS\nCLÁUSULA DÉCIMA — DO FORO\n\n[Local], [data].\n___________________________  ___________________________\nCONTRATANTE                 CONTRATADA\nTESTEMUNHAS:\n1. _______________  CPF: _____________\n2. _______________  CPF: _____________`,
+  };
+  return ps[tipo] || ps.livro;
+}
+
+// ══════════════════════════════════════════════
+// UTILITÁRIOS
+// ══════════════════════════════════════════════
+async function copiar(text) {
+  const c = text.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1").replace(/\[Fonte:[^\]]+\]/g, "");
+  try { await navigator.clipboard.writeText(c); return true; } catch {
+    const ta = document.createElement("textarea"); ta.value = c;
+    Object.assign(ta.style, { position: "fixed", top: 0, left: 0, opacity: 0, pointerEvents: "none" });
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    try { document.execCommand("copy"); document.body.removeChild(ta); return true; } catch { document.body.removeChild(ta); return false; }
+  }
+}
+
+function Linhas({ text }) {
+  return (<>{text.split("\n").map((line, i) => {
+    const l = line.trim();
+    if (!l) return <div key={i} style={{ height: 7 }} />;
+    if (/^\*\*[^*]+\*\*$/.test(l)) return <div key={i} style={{ fontWeight: 700, color: "#0f1a33", marginTop: 16, marginBottom: 5, fontSize: 13.5, borderLeft: "3px solid #c9a84c", paddingLeft: 10 }}>{l.replace(/\*\*/g, "")}</div>;
+    if (/^>/.test(l)) return <div key={i} style={{ borderLeft: "4px solid #c9a84c", paddingLeft: 14, margin: "10px 0", color: "#3a2800", fontStyle: "italic", fontSize: 12, lineHeight: 1.75, background: "#fdfaf4", padding: "8px 14px", borderRadius: "0 4px 4px 0" }}>{l.replace(/^>\s*/, "")}</div>;
+    if (/^[①②③④⑤]/.test(l)) return <div key={i} style={{ fontWeight: 700, fontSize: 11, color: "#8b1a1a", borderBottom: "1px solid #e5e0d8", paddingBottom: 4, marginTop: 18, marginBottom: 7, textTransform: "uppercase", letterSpacing: ".06em" }}>{l}</div>;
+    if (/^[¹²³⁴⁵⁶⁷⁸⁹]/.test(l) || (/^\d{1,2}[.\s]/.test(l) && l.length < 400)) return <div key={i} style={{ fontSize: 11, color: "#666", lineHeight: 1.65, paddingLeft: 20, textIndent: "-20px", marginBottom: 3 }}>{l}</div>;
+    if (/^#{1,3}\s/.test(l)) return <div key={i} style={{ fontWeight: 700, color: "#0f1a33", marginTop: 16, marginBottom: 5, fontSize: 13.5 }}>{l.replace(/^#+\s/, "")}</div>;
+    // inline bold/italic
+    const segs = l.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/);
+    return <p key={i} style={{ margin: "0 0 7px", textAlign: "justify", lineHeight: 1.9 }}>{segs.map((s, j) => {
+      if (/^\*\*[^*]+\*\*$/.test(s)) return <strong key={j}>{s.slice(2, -2)}</strong>;
+      if (/^\*[^*]+\*$/.test(s)) return <em key={j}>{s.slice(1, -1)}</em>;
+      return <span key={j}>{s}</span>;
+    })}</p>;
+  })}</>);
+}
+
+// ══════════════════════════════════════════════
+// APP PRINCIPAL
+// ══════════════════════════════════════════════
+function App() {
+  const load = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
+  const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { } };
+
+  const [motor, setMotor] = useState(() => load("jep:motor", "claude")); // "claude" | "gemini"
+  const [geminiKey, setGeminiKey] = useState(() => { try { return localStorage.getItem("jep:gkey") || ""; } catch { return ""; } });
+  const [showCfg, setShowCfg] = useState(false);
+  const [showKey, setShowKey] = useState(false);
+  const [tab, setTab] = useState("inicio");
+  const [tipo, setTipo] = useState("livro");
+  const [problema, setProblema] = useState(""); // campo de descrição do problema
+  const [tema, setTema] = useState("");
+  const [area, setArea] = useState(() => load("jep:area", "Direito Administrativo"));
+  const [nivel, setNivel] = useState(() => load("jep:nivel", "Doutorado e tratados acadêmicos"));
+  const [msgs, setMsgs] = useState([]);
+  const [hist, setHist] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState("");
+  const [cpFb, setCpFb] = useState({});
+  const [proj, setProj] = useState(() => load("jep:proj", {}));
+  const [bTermo, setBTermo] = useState("");
+  const [bResult, setBResult] = useState("");
+  const [bLoad, setBLoad] = useState(false);
+
+  const botRef = useRef(null);
+  const taRef = useRef(null);
+  const p = { nome: "", area: "", autores: "", capsOk: [], capsProx: [], ...proj };
+  const totalC = (p.capsOk?.length || 0) + (p.capsProx?.length || 0);
+  const pct = totalC > 0 ? Math.round((p.capsOk?.length || 0) / totalC * 100) : 0;
+  const totD = msgs.filter(m => m.role === "assistant").length;
+  const totW = msgs.filter(m => m.role === "assistant").reduce((s, m) => s + m.text.split(/\s+/).length, 0);
+
+  useEffect(() => { try { localStorage.setItem("jep:gkey", geminiKey); } catch { } }, [geminiKey]);
+  useEffect(() => { save("jep:motor", motor); }, [motor]);
+  useEffect(() => { save("jep:proj", proj); }, [proj]);
+  useEffect(() => { save("jep:area", area); }, [area]);
+  useEffect(() => { save("jep:nivel", nivel); }, [nivel]);
+  useEffect(() => { botRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, loading]);
+
+  const motorLabel = motor === "claude"
+    ? "⚖️ Claude Sonnet 4 · sem chave"
+    : geminiKey ? "🔮 Gemini 2.5 Flash" : "🔮 Gemini (sem chave)";
+
+  const send = useCallback(async (override) => {
+    const txt = override !== undefined ? String(override).trim() : tema.trim();
+    if (!txt || loading) return;
+    if (motor === "gemini" && !geminiKey?.trim()) {
+      setStatus("❌ Cole a chave Gemini nas configurações, ou mude para o motor Claude (não precisa de chave).");
+      setTab("editor");
+      return;
+    }
+    setTab("editor");
+    const prompt = override !== undefined ? txt : buildPrompt(tipo, problema, txt, area, nivel, p);
+    const label = TIPOS_DOC.find(t => t.id === tipo)?.l || "Texto";
+    const display = `[${label}] ${txt.slice(0, 100)}${txt.length > 100 ? "…" : ""}${problema ? ` ↳ Problema: ${problema.slice(0, 60)}…` : ""}`;
+    const nh = [...hist, { role: "user", content: prompt }];
+    setHist(nh); setMsgs(m => [...m, { role: "user", text: display }]);
+    setLoading(true); setStatus("");
+    try {
+      let reply;
+      if (motor === "gemini") {
+        reply = await chamarGemini(nh, buildSys(area, nivel, p), geminiKey, setStatus);
+      } else {
+        reply = await chamarClaude(nh, buildSys(area, nivel, p), setStatus);
+      }
+      setHist(h => [...h, { role: "assistant", content: reply }]);
+      setMsgs(m => [...m, { role: "assistant", text: reply, motor }]);
+      setStatus("");
+    } catch (e) {
+      let msg = e.message;
+      if (msg.includes("Failed to fetch") && motor === "gemini") {
+        msg = "Gemini bloqueado neste ambiente (Claude.ai restringe chamadas externas ao Google). Solução: clique em MOTOR e selecione Claude — funciona sem chave.";
+      }
+      setMsgs(m => [...m, { role: "assistant", text: `⚠️ ${msg}`, motor }]);
+      setStatus("");
+    }
+    setLoading(false);
+  }, [hist, tema, problema, loading, tipo, area, nivel, p, motor, geminiKey]);
+
+  async function buscar() {
+    if (!bTermo || bLoad) return;
+    setBLoad(true); setBResult("");
+    const sys = buildSys(area, nivel, p);
+    const prompt = `Pesquise e cite jurisprudência atualizada STF e STJ (2020-2025) sobre: ${bTermo}\n\nPara cada precedente informe: número, tribunal, relator, turma, data, ementa resumida e tese. Mínimo 5 precedentes. Se não tiver certeza de dados específicos, use "o STJ tem decidido que..." — nunca invente.`;
+    try {
+      let text;
+      if (motor === "gemini" && geminiKey?.trim()) {
+        text = await chamarGemini([{ role: "user", content: prompt }], sys, geminiKey, () => { });
+      } else {
+        text = await chamarClaude([{ role: "user", content: prompt }], sys, () => { });
+      }
+      setBResult(text);
+    } catch (e) {
+      let msg = e.message;
+      if (msg.includes("Failed to fetch")) msg = "Gemini bloqueado aqui. Mude o motor para Claude nas configurações.";
+      setBResult("⚠️ " + msg);
+    }
+    setBLoad(false);
+  }
+
+  async function hCopy(text, id) {
+    const ok = await copiar(text);
+    if (ok) { setCpFb(f => ({ ...f, [id]: true })); setTimeout(() => setCpFb(f => ({ ...f, [id]: false })), 2500); }
+  }
+
+  // ── ESTILOS ──
+  const N = "#0f1a33", G = "#c9a84c", CR = "#f5f1ea";
+  const inp = { fontFamily: "Georgia,serif", fontSize: 12, padding: "6px 9px", border: "1px solid #d4cfc6", borderRadius: 4, background: "white", color: N, outline: "none" };
+  const bOut = (bc = "#d4cfc6", fc = "#555") => ({ padding: "5px 12px", border: `1px solid ${bc}`, borderRadius: 4, background: "white", color: fc, cursor: "pointer", fontSize: 11, fontFamily: "monospace", transition: "all .15s" });
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh", fontFamily: "Georgia,serif", background: CR, overflow: "hidden" }}>
+      <style>{`
+        * { box-sizing: border-box; }
+        ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-thumb { background: #d4cfc6; border-radius: 2px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes jup { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes jb { 0%,80%,100% { transform: translateY(0); opacity:.4; } 40% { transform: translateY(-5px); opacity:1; } }
+        button:active { transform: scale(.97); }
+        .tc:hover { border-color: #c9a84c !important; background: #fdfaf4 !important; transform: translateY(-2px); box-shadow: 0 4px 14px rgba(201,168,76,.18); }
+        .tb:hover { background: #0f1a33 !important; color: white !important; }
+        .ch:hover { border-color: #c9a84c !important; color: #0f1a33 !important; background: #fdfaf4 !important; }
+        .nav-tab:hover { background: #fdfaf4 !important; }
+        .motor-btn:hover { opacity: .85; }
+      `}</style>
+
+      {/* ══ HEADER ══ */}
+      <div style={{ background: `linear-gradient(90deg,#08122a,${N},#1a2744)`, padding: "9px 16px", display: "flex", alignItems: "center", gap: 10, borderBottom: `2px solid ${G}`, flexShrink: 0 }}>
+        <div style={{ width: 36, height: 36, borderRadius: "50%", border: `2px solid ${G}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, background: "rgba(201,168,76,.1)", flexShrink: 0 }}>⚖️</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 15, color: "white", lineHeight: 1.2 }}>
+            Jur<span style={{ color: G }}>Edit</span>Pro
+            <span style={{ fontSize: 8, fontFamily: "monospace", color: "rgba(201,168,76,.7)", marginLeft: 7, letterSpacing: ".1em", fontWeight: 400 }}>EXCELLENCE v2</span>
+          </div>
+          <div style={{ fontSize: 8, color: "rgba(255,255,255,.3)", letterSpacing: ".07em", textTransform: "uppercase", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {p.nome || "Redação jurídica acadêmica de máximo padrão · R$ 0/mês"}
+          </div>
+        </div>
+
+        {/* SELETOR DE MOTOR */}
+        <div style={{ display: "flex", background: "rgba(255,255,255,.07)", border: "1px solid rgba(255,255,255,.12)", borderRadius: 6, overflow: "hidden", flexShrink: 0 }}>
+          {[
+            { id: "claude", label: "⚖️ Claude", sub: "sem chave · padrão" },
+            { id: "gemini", label: "🔮 Gemini", sub: "chave Google" },
+          ].map(m => (
+            <button key={m.id} className="motor-btn" onClick={() => setMotor(m.id)}
+              style={{ padding: "5px 11px", border: "none", background: motor === m.id ? G : "transparent", color: motor === m.id ? N : "rgba(255,255,255,.6)", cursor: "pointer", fontSize: 10, fontFamily: "monospace", fontWeight: motor === m.id ? 700 : 400, transition: "all .15s", display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
+              <span>{m.label}</span>
+              <span style={{ fontSize: 7, opacity: .8 }}>{m.sub}</span>
+            </button>
+          ))}
+        </div>
+
+        <button onClick={() => setShowCfg(!showCfg)}
+          style={{ padding: "6px 11px", background: showCfg ? G : "rgba(255,255,255,.08)", border: `1px solid ${showCfg ? G : "rgba(255,255,255,.15)"}`, color: showCfg ? N : "rgba(255,255,255,.7)", borderRadius: 5, cursor: "pointer", fontSize: 10, fontFamily: "monospace", fontWeight: 700, transition: "all .15s" }}>
+          ⚙ Config
+        </button>
+      </div>
+
+      {/* ══ CONFIG PANEL ══ */}
+      {showCfg && (
+        <div style={{ background: "#07101e", borderBottom: "1px solid rgba(201,168,76,.2)", padding: "10px 18px", display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap", flexShrink: 0 }}>
+          {/* Motor info */}
+          <div style={{ background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 6, padding: "8px 12px", minWidth: 180 }}>
+            <div style={{ fontSize: 9, color: G, fontFamily: "monospace", marginBottom: 5, textTransform: "uppercase", letterSpacing: ".08em" }}>Motor ativo</div>
+            {motor === "claude" ? (
+              <div>
+                <div style={{ fontSize: 12, color: "#4ade80", fontWeight: 700 }}>✓ Claude Sonnet 4</div>
+                <div style={{ fontSize: 9, color: "rgba(255,255,255,.4)", fontFamily: "monospace", marginTop: 2 }}>Funciona aqui sem nenhuma chave.<br />Máxima qualidade jurídica.</div>
+              </div>
+            ) : (
+              <div>
+                <div style={{ fontSize: 12, color: geminiKey ? "#4ade80" : "#fca5a5", fontWeight: 700 }}>{geminiKey ? "✓ Gemini 2.5 Flash (GA)" : "⚠ Sem chave"}</div>
+                <div style={{ fontSize: 9, color: "rgba(255,255,255,.4)", fontFamily: "monospace", marginTop: 2 }}>Requer chave do Google AI Studio.<br />gemini-2.5-flash · GA estável 2025.</div>
+              </div>
+            )}
+          </div>
+
+          {/* Gemini key */}
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <div style={{ fontSize: 9, color: G, fontFamily: "monospace", marginBottom: 5, textTransform: "uppercase", letterSpacing: ".08em" }}>🔑 Chave Google AI Studio (Gemini opcional)</div>
+            <div style={{ display: "flex", gap: 5 }}>
+              <input type={showKey ? "text" : "password"} value={geminiKey} onChange={e => setGeminiKey(e.target.value)}
+                placeholder="AIzaSy... (cole aqui — 100% grátis em aistudio.google.com)"
+                style={{ flex: 1, padding: "6px 9px", border: "1px solid rgba(201,168,76,.3)", borderRadius: 4, background: "rgba(255,255,255,.07)", color: "white", fontFamily: "monospace", fontSize: 11, outline: "none" }} />
+              <button onClick={() => setShowKey(!showKey)} style={{ padding: "6px 8px", background: "rgba(255,255,255,.07)", border: "1px solid rgba(255,255,255,.12)", color: "#ccc", borderRadius: 4, cursor: "pointer", fontSize: 12 }}>{showKey ? "🙈" : "👁"}</button>
+            </div>
+            <div style={{ display: "flex", gap: 7, marginTop: 5 }}>
+              <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer"
+                style={{ fontSize: 9, color: G, fontFamily: "monospace", padding: "4px 9px", border: `1px solid ${G}`, borderRadius: 3, textDecoration: "none" }}>Criar chave Gemini ↗</a>
+              <div style={{ fontSize: 9, color: "rgba(255,255,255,.35)", fontFamily: "monospace", lineHeight: 1.5, padding: "4px 0" }}>
+                ⚠ Se aparecer "Failed to fetch" com Gemini → use o motor Claude (sem chave)
+              </div>
+            </div>
+          </div>
+
+          <button onClick={() => setShowCfg(false)} style={{ padding: "6px 13px", background: "rgba(34,197,94,.2)", border: "1px solid rgba(34,197,94,.4)", color: "#4ade80", borderRadius: 4, cursor: "pointer", fontSize: 10, fontFamily: "monospace", marginTop: 2 }}>✓ Fechar</button>
+        </div>
+      )}
+
+      {/* ══ NAV ══ */}
+      <div style={{ background: "white", borderBottom: "2px solid #e5e0d8", display: "flex", alignItems: "stretch", flexShrink: 0 }}>
+        {[{ id: "inicio", ic: "🏠", l: "Início" }, { id: "editor", ic: "✍️", l: "Editor" }, { id: "busca", ic: "🔎", l: "Busca" }, { id: "projeto", ic: "📚", l: "Projeto" }].map(t => (
+          <button key={t.id} className="nav-tab" onClick={() => setTab(t.id)}
+            style={{ padding: "8px 18px", border: "none", borderBottom: `3px solid ${tab === t.id ? G : "transparent"}`, background: tab === t.id ? "#fdfaf4" : "white", cursor: "pointer", fontSize: 12, color: tab === t.id ? N : "#8a8278", fontFamily: "Georgia,serif", fontWeight: tab === t.id ? 700 : 400, display: "flex", alignItems: "center", gap: 5, transition: "all .12s", marginBottom: -2 }}>
+            <span style={{ fontSize: 13 }}>{t.ic}</span>{t.l}
+          </button>
+        ))}
+        {/* Motor badge + status */}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, padding: "0 14px" }}>
+          <span style={{ fontSize: 9, padding: "3px 8px", background: motor === "claude" ? "rgba(34,197,94,.1)" : "rgba(96,165,250,.1)", border: `1px solid ${motor === "claude" ? "rgba(34,197,94,.3)" : "rgba(96,165,250,.3)"}`, color: motor === "claude" ? "#166534" : "#1d4ed8", borderRadius: 12, fontFamily: "monospace", fontWeight: 700 }}>
+            {motor === "claude" ? "⚖️ Claude" : "🔮 Gemini"}
+          </span>
+          {status && <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 9, color: status.startsWith("❌") ? "#991b1b" : "#666", fontFamily: "monospace" }}>
+            {!status.startsWith("❌") && <div style={{ width: 8, height: 8, borderRadius: "50%", border: `2px solid ${G}`, borderTopColor: "transparent", animation: "spin 1s linear infinite" }} />}
+            {status.slice(0, 60)}
+          </div>}
+        </div>
+      </div>
+
+      {/* ══════════════════ INÍCIO ══════════════════ */}
+      {tab === "inicio" && (
+        <div style={{ flex: 1, overflowY: "auto", padding: "18px 22px" }}>
+
+          {/* Aviso Claude sem chave */}
+          {motor === "claude" && (
+            <div style={{ background: "linear-gradient(135deg,rgba(34,197,94,.08),rgba(201,168,76,.08))", border: "1px solid rgba(34,197,94,.25)", borderRadius: 8, padding: "10px 16px", marginBottom: 14, display: "flex", gap: 10, alignItems: "center" }}>
+              <div style={{ fontSize: 20 }}>⚖️</div>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#166534", marginBottom: 2 }}>Claude Sonnet 4 ativo — sem nenhuma chave</div>
+                <div style={{ fontSize: 10, color: "#166534", lineHeight: 1.6 }}>Motor principal. Máxima qualidade jurídica. Funciona diretamente aqui no Claude.ai free.</div>
+              </div>
+            </div>
+          )}
+          {motor === "gemini" && !geminiKey && (
+            <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, padding: "10px 16px", marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ flex: 1 }}><div style={{ fontSize: 12, fontWeight: 700, color: "#991b1b" }}>🔮 Gemini selecionado mas sem chave</div>
+                <div style={{ fontSize: 10, color: "#b91c1c", lineHeight: 1.6 }}>Ou cole a chave em ⚙ Config, ou mude para <strong>⚖️ Claude</strong> (funciona sem chave).</div></div>
+              <button onClick={() => setMotor("claude")} style={{ padding: "6px 12px", background: "#0f1a33", color: "#c9a84c", border: "none", borderRadius: 4, cursor: "pointer", fontSize: 11, fontFamily: "monospace", fontWeight: 700, whiteSpace: "nowrap" }}>Usar Claude →</button>
+            </div>
+          )}
+
+          {/* KPIs */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 16 }}>
+            {[
+              { l: "Docs gerados", v: totD, u: "textos" },
+              { l: "Palavras escritas", v: totW.toLocaleString("pt-BR"), u: "palavras" },
+              { l: "Progresso", v: `${pct}%`, u: `${p.capsOk?.length || 0}/${totalC} caps` },
+              { l: "Motor", v: motor === "claude" ? "Claude" : "Gemini", u: motor === "claude" ? "sem chave" : "Google Flash" },
+            ].map((k, i) => (
+              <div key={i} style={{ background: "white", border: "1px solid #e5e0d8", borderRadius: 8, padding: "11px 13px" }}>
+                <div style={{ fontSize: 8, color: "#8a8278", fontFamily: "monospace", marginBottom: 4, textTransform: "uppercase", letterSpacing: ".07em" }}>{k.l}</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: N, lineHeight: 1 }}>{k.v}</div>
+                <div style={{ fontSize: 9, color: "#aaa", marginTop: 3 }}>{k.u}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Config rápida */}
+          <div style={{ background: "white", border: "1px solid #e5e0d8", borderRadius: 8, padding: "10px 14px", marginBottom: 16, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontSize: 8, color: "#8a8278", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".1em", whiteSpace: "nowrap" }}>Config:</span>
+            <select style={inp} value={area} onChange={e => setArea(e.target.value)}>{AREAS.map(a => <option key={a}>{a}</option>)}</select>
+            <select style={inp} value={nivel} onChange={e => setNivel(e.target.value)}>
+              <option value="Doutorado e tratados acadêmicos">Doutorado / Tratado</option>
+              <option value="Operadores do Direito (juízes, advogados, promotores)">Operadores do Direito</option>
+              <option value="Mestrado e pós-graduação stricto sensu">Mestrado / Pós-Grad.</option>
+              <option value="Graduação avançada">Graduação Avançada</option>
+            </select>
+            <input value={p.nome} onChange={e => setProj(pr => ({ ...pr, nome: e.target.value }))} placeholder="Nome do livro / projeto..." style={{ ...inp, flex: 1, minWidth: 140, padding: "6px 9px" }} />
+          </div>
+
+          {/* Tipos de documento */}
+          <div style={{ fontSize: 8, color: "#8a8278", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".13em", marginBottom: 10 }}>Tipo de documento — selecione e vá ao Editor</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 9, marginBottom: 18 }}>
+            {TIPOS_DOC.map(t => (
+              <div key={t.id} className="tc"
+                onClick={() => { setTipo(t.id); setTab("editor"); setTimeout(() => taRef.current?.focus(), 100); }}
+                style={{ background: tipo === t.id ? `${t.cor}12` : "white", border: `2px solid ${tipo === t.id ? t.cor : "#e5e0d8"}`, borderRadius: 10, padding: "13px 12px", cursor: "pointer", transition: "all .15s", position: "relative", overflow: "hidden" }}>
+                {/* Faixa colorida no topo */}
+                <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 3, background: t.cor, borderRadius: "8px 8px 0 0" }} />
+                {/* Ícone com fundo colorido */}
+                <div style={{ width: 40, height: 40, borderRadius: 10, background: `${t.cor}15`, border: `1px solid ${t.cor}30`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, marginBottom: 8, marginTop: 4 }}>{t.ic}</div>
+                <div style={{ fontSize: 11.5, fontWeight: 700, color: tipo === t.id ? t.cor : N, marginBottom: 3, lineHeight: 1.3 }}>{t.l}</div>
+                <div style={{ fontSize: 10, color: "#8a8278", lineHeight: 1.5 }}>{t.desc}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Capítulos pendentes */}
+          {p.capsProx?.length > 0 && (
+            <div style={{ background: "white", border: "1px solid #e5e0d8", borderRadius: 8, padding: "12px 16px" }}>
+              <div style={{ fontSize: 8, color: "#8a8278", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 9 }}>Capítulos pendentes — clique para gerar</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {p.capsProx.map((c, i) => (
+                  <button key={i} disabled={loading}
+                    onClick={() => { setTipo("livro"); send(`Gere o Capítulo ${c.num}: ${c.titulo} do projeto "${p.nome}". Área: ${area}.`); }}
+                    style={{ padding: "6px 13px", background: "#fdfaf4", border: `1px solid ${G}`, borderRadius: 20, cursor: loading ? "not-allowed" : "pointer", fontSize: 11, color: N, fontFamily: "monospace", opacity: loading ? .4 : 1, transition: "all .15s" }}
+                    onMouseEnter={e => { if (!loading) { e.currentTarget.style.background = G; e.currentTarget.style.color = "white"; } }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "#fdfaf4"; e.currentTarget.style.color = N; }}>
+                    ▶ Cap.{c.num} — {c.titulo?.slice(0, 32)}{c.titulo?.length > 32 ? "…" : ""}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ══════════════════ EDITOR ══════════════════ */}
+      {tab === "editor" && (
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {/* Chips tipo */}
+          <div style={{ background: "white", borderBottom: "1px solid #e5e0d8", padding: "5px 14px", display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap", flexShrink: 0 }}>
+            <span style={{ fontSize: 8, color: "#8a8278", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".09em", whiteSpace: "nowrap" }}>Tipo:</span>
+            {TIPOS_DOC.map(t => (
+              <button key={t.id} onClick={() => setTipo(t.id)}
+                style={{ padding: "3px 9px", border: `1px solid ${tipo === t.id ? t.cor : "#d4cfc6"}`, borderRadius: 12, background: tipo === t.id ? `${t.cor}12` : "transparent", color: tipo === t.id ? t.cor : "#8a8278", cursor: "pointer", fontSize: 9.5, fontFamily: "monospace", fontWeight: tipo === t.id ? 700 : 400, transition: "all .12s" }}>
+                {t.ic} {t.l}
+              </button>
+            ))}
+          </div>
+
+          {/* Chat */}
+          <div style={{ flex: 1, overflowY: "auto", padding: "14px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
+            {msgs.length === 0 && (
+              <div style={{ textAlign: "center", padding: "44px 18px", color: "#8a8278" }}>
+                <div style={{ fontSize: 46, marginBottom: 10 }}>✍️</div>
+                <div style={{ fontSize: 14, color: N, fontWeight: 700, marginBottom: 7 }}>Editor jurídico pronto</div>
+                <div style={{ fontSize: 12, lineHeight: 1.9, maxWidth: 440, margin: "0 auto", color: "#666" }}>
+                  <strong>1.</strong> Preencha o campo <em>"Descrição do problema"</em> abaixo com o contexto jurídico<br />
+                  <strong>2.</strong> Escreva o tema no campo principal<br />
+                  <strong>3.</strong> Pressione <strong>Enter</strong> — o Claude gerará o texto completo
+                </div>
+              </div>
+            )}
+            {msgs.map((m, i) => (
+              <div key={i} style={{ animation: "jup .22s ease" }}>
+                {m.role === "user" ? (
+                  <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                    <div style={{ maxWidth: "78%", padding: "9px 15px", background: N, color: "rgba(255,255,255,.88)", borderRadius: 8, fontSize: 12.5, lineHeight: 1.7 }}>{m.text}</div>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+                      <span style={{ fontSize: 8, padding: "2px 7px", background: m.motor === "gemini" ? "rgba(96,165,250,.1)" : "rgba(201,168,76,.12)", border: `1px solid ${m.motor === "gemini" ? "rgba(96,165,250,.3)" : "rgba(201,168,76,.3)"}`, color: m.motor === "gemini" ? "#1d4ed8" : "#92400e", borderRadius: 10, fontFamily: "monospace", fontWeight: 700 }}>
+                        {m.motor === "gemini" ? "🔮 Gemini" : "⚖️ Claude"}
+                      </span>
+                    </div>
+                    <div style={{ padding: "14px 18px", background: "white", borderLeft: `3px solid ${G}`, borderRadius: 4, fontSize: 13, lineHeight: 1.9, fontFamily: "Georgia,serif", color: "#0f0e0c", boxShadow: "0 1px 8px rgba(0,0,0,.07)" }}>
+                      <Linhas text={m.text} />
+                    </div>
+                    <div style={{ display: "flex", gap: 6, marginTop: 7, flexWrap: "wrap" }}>
+                      <button onClick={() => gerarDocx(m.text, p.nome, p)} style={{ padding: "5px 13px", background: "#8b1a1a", color: "white", border: "none", borderRadius: 4, fontSize: 11, fontFamily: "monospace", cursor: "pointer", fontWeight: 700 }}>⬇ .docx</button>
+                      <button onClick={() => hCopy(m.text, i)} style={bOut(cpFb[i] ? "#22c55e" : "#d4cfc6", cpFb[i] ? "#166534" : "#555")}>{cpFb[i] ? "✓ Copiado!" : "📋 Copiar"}</button>
+                      <button onClick={() => send(`Continue EXATAMENTE de onde parou, sem repetir nada. Retome da última frase:\n\n${m.text.slice(-300)}`)} style={bOut()}>▶ Continuar</button>
+                      <button onClick={() => send(`Revise e aprimore preservando estilo do autor, corrija ABNT, enriqueça citações:\n\n${m.text}`)} style={bOut()}>🔍 Revisar</button>
+                      <button onClick={() => { window.open("https://docs.new", "_blank"); hCopy(m.text, "docs"); }} style={bOut("#34a853", "#166534")}>📝 Docs</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+            {loading && (
+              <div style={{ display: "flex", gap: 9, alignItems: "center", padding: "12px 16px", background: "white", borderLeft: `3px solid ${G}`, borderRadius: 4, boxShadow: "0 1px 7px rgba(0,0,0,.07)" }}>
+                <div style={{ display: "flex", gap: 4 }}>{[0, .2, .4].map((d, j) => <div key={j} style={{ width: 6, height: 6, borderRadius: "50%", background: G, animation: `jb 1.2s ${d}s infinite` }} />)}</div>
+                <span style={{ fontSize: 10, color: "#8a8278", fontFamily: "monospace", flex: 1 }}>{status || (motor === "claude" ? "⚖️ Claude Sonnet gerando..." : "🔮 Gemini gerando...")}</span>
+                <button onClick={() => { setLoading(false); setStatus(""); }} style={{ padding: "3px 9px", background: "#991b1b", border: "none", borderRadius: 3, color: "white", fontSize: 9, fontFamily: "monospace", cursor: "pointer" }}>✕ Cancelar</button>
+              </div>
+            )}
+            <div ref={botRef} />
+          </div>
+
+          {/* INPUT AREA */}
+          <div style={{ background: "white", borderTop: "1px solid #d4cfc6", padding: "11px 15px", flexShrink: 0 }}>
+
+            {/* Campo de descrição do problema */}
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                <span style={{ fontSize: 8, color: "#8a8278", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".1em" }}>📌 Descrição do problema / contexto jurídico</span>
+                <span style={{ fontSize: 8, color: "#aaa", fontFamily: "monospace" }}>(opcional mas MUITO recomendado — base do sumário e do desenvolvimento)</span>
+              </div>
+              <textarea value={problema} onChange={e => setProblema(e.target.value)} rows={3}
+                placeholder="Descreva aqui o problema jurídico, o caso concreto, a controvérsia doutrinária ou as questões que devem ser respondidas pelo texto. Ex: 'Escritório consultado por empresa pública que sofreu impugnação de licitação por preço inexeqüível — necessário parecer analisando o art. 59 da Lei 14.133/2021, jurisprudência TCU e STJ, e os limites do poder discricionário da comissão de licitação...'"
+                style={{ width: "100%", padding: "9px 12px", border: `1px solid ${G}40`, fontFamily: "Georgia,serif", fontSize: 12, resize: "none", outline: "none", borderRadius: 6, lineHeight: 1.65, background: "#fdfaf4", maxHeight: 140, transition: "all .2s", color: "#333" }}
+                onFocus={e => { e.target.style.borderColor = G; e.target.style.background = "white"; }}
+                onBlur={e => { e.target.style.borderColor = `${G}40`; e.target.style.background = "#fdfaf4"; }}
+              />
+            </div>
+
+            {/* Campo tema principal */}
+            <div style={{ display: "flex", gap: 7, alignItems: "flex-end" }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 8, color: "#8a8278", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 4 }}>
+                  Tema / Título do documento ({TIPOS_DOC.find(t => t.id === tipo)?.l})
+                </div>
+                <textarea ref={taRef} rows={2} value={tema} onChange={e => setTema(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+                  placeholder={`Ex: ${tipo === "livro" ? "Licitação inexigível e dispensa — Lei 14.133/2021" : tipo === "parecer" ? "Validade de contrato administrativo firmado sem licitação" : tipo === "peticao" ? "Mandado de segurança contra ato de autoridade coatora" : tipo === "sumario" ? "Direito Administrativo Contemporâneo — 3ª edição" : "Tema do documento..."}`}
+                  style={{ width: "100%", padding: "8px 11px", border: "1px solid #d4cfc6", fontFamily: "Georgia,serif", fontSize: 13, resize: "none", outline: "none", borderRadius: 5, lineHeight: 1.6, background: CR, maxHeight: 100, transition: "all .2s" }}
+                  onFocus={e => { e.target.style.borderColor = G; e.target.style.background = "white"; }}
+                  onBlur={e => { e.target.style.borderColor = "#d4cfc6"; e.target.style.background = CR; }}
+                />
+              </div>
+              <button onClick={() => send()} disabled={loading || !tema.trim()}
+                style={{ width: 44, height: 44, background: (loading || !tema.trim()) ? "#d4cfc6" : N, border: "none", borderRadius: 5, cursor: (loading || !tema.trim()) ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all .2s" }}
+                onMouseEnter={e => { if (!loading && tema.trim()) e.currentTarget.style.background = "#8b1a1a"; }}
+                onMouseLeave={e => { if (!loading && tema.trim()) e.currentTarget.style.background = N; }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="white"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
+              </button>
+            </div>
+
+            <div style={{ display: "flex", gap: 5, marginTop: 7, flexWrap: "wrap", alignItems: "center" }}>
+              {["Desenvolver texto completo", "Buscar jurisprudência", "Avaliação técnica", "Continuar texto", "Revisar ABNT"].map((a, i) => (
+                <button key={i} className="ch" onClick={() => setTema(t => {
+                  const b = t || "[insira o tema]";
+                  if (a === "Continuar texto") return `Continue de onde parou:\n\n${b}`;
+                  return `${a} sobre: ${b}`;
+                })} style={{ fontSize: 9.5, fontFamily: "monospace", padding: "3px 8px", border: "1px solid #d4cfc6", background: "transparent", color: "#8a8278", cursor: "pointer", borderRadius: 3 }}>
+                  {a}
+                </button>
+              ))}
+              {problema && (
+                <button onClick={() => setProblema("")}
+                  style={{ fontSize: 9, fontFamily: "monospace", padding: "3px 8px", border: "1px solid #fca5a5", background: "transparent", color: "#b91c1c", cursor: "pointer", borderRadius: 3 }}>
+                  ✕ limpar problema
+                </button>
+              )}
+              {msgs.length > 0 && (
+                <button onClick={() => { setMsgs([]); setHist([]); }} style={{ fontSize: 9.5, fontFamily: "monospace", padding: "3px 8px", border: "1px solid #fca5a5", background: "transparent", color: "#b91c1c", cursor: "pointer", borderRadius: 3, marginLeft: "auto" }}>
+                  🗑 Limpar
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════ BUSCA ══════════════════ */}
+      {tab === "busca" && (
+        <div style={{ flex: 1, overflowY: "auto", padding: "18px 22px" }}>
+          <div style={{ fontSize: 8, color: "#8a8278", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".13em", marginBottom: 12 }}>
+            Busca jurídica — STF · STJ · TRFs · TCU · BDjur · LexML · Legislação · TJDFT
+          </div>
+          <div style={{ display: "flex", gap: 7, marginBottom: 12 }}>
+            <input value={bTermo} onChange={e => setBTermo(e.target.value)} onKeyDown={e => { if (e.key === "Enter") buscar(); }}
+              placeholder="Ex: responsabilidade civil Estado, licitação inexigível, poder de polícia, improbidade administrativa..."
+              style={{ flex: 1, padding: "9px 13px", border: "1px solid #d4cfc6", fontFamily: "Georgia,serif", fontSize: 13, borderRadius: 5, outline: "none", background: "white" }}
+              onFocus={e => e.target.style.borderColor = G} onBlur={e => e.target.style.borderColor = "#d4cfc6"} />
+            <button onClick={buscar} disabled={bLoad || !bTermo}
+              style={{ padding: "9px 18px", background: bLoad || !bTermo ? "#d4cfc6" : N, color: "white", border: "none", borderRadius: 5, cursor: bLoad || !bTermo ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>
+              {bLoad ? "⏳..." : `🔎 ${motor === "claude" ? "Claude" : "Gemini"}`}
+            </button>
+          </div>
+
+          {/* Botões tribunais */}
+          <div style={{ background: "white", border: "1px solid #e5e0d8", borderRadius: 8, padding: "11px 15px", marginBottom: 14 }}>
+            <div style={{ fontSize: 8, color: "#8a8278", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".09em", marginBottom: 8 }}>Abrir diretamente no tribunal (nova aba):</div>
+            <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+              {TRIBUNAIS.map(t => (
+                <button key={t.l} className="tb" onClick={() => bTermo && window.open(t.url + encodeURIComponent(bTermo), "_blank")} disabled={!bTermo}
+                  style={{ padding: "5px 11px", border: `1px solid ${N}`, borderRadius: 4, background: "white", color: N, cursor: bTermo ? "pointer" : "not-allowed", fontSize: 10, fontFamily: "monospace", fontWeight: 700, opacity: bTermo ? 1 : .3, transition: "all .13s" }}>
+                  🔗 {t.l}
+                </button>
+              ))}
+            </div>
+            {!bTermo && <div style={{ fontSize: 9, color: "#aaa", marginTop: 6, fontFamily: "monospace" }}>Digite um termo acima para habilitar os botões</div>}
+          </div>
+
+          {/* Resultado busca */}
+          {bResult && (
+            <div style={{ background: "white", border: `1px solid ${G}50`, borderLeft: `3px solid ${G}`, borderRadius: 4, padding: "14px 18px" }}>
+              <div style={{ fontSize: 8, color: G, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 10 }}>Jurisprudência compilada — {motor === "claude" ? "Claude Sonnet" : "Gemini"}</div>
+              <div style={{ fontSize: 13, lineHeight: 1.9, fontFamily: "Georgia,serif" }}><Linhas text={bResult} /></div>
+              <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
+                <button onClick={() => hCopy(bResult, "b")} style={bOut(cpFb["b"] ? "#22c55e" : "#d4cfc6", cpFb["b"] ? "#166534" : "#555")}>{cpFb["b"] ? "✓ Copiado!" : "📋 Copiar"}</button>
+                <button onClick={() => {
+                  setTema(`Desenvolva texto jurídico completo usando estas jurisprudências como base:\n\nTema: ${bTermo}`);
+                  setProblema(bResult.slice(0, 500));
+                  setTab("editor");
+                }} style={{ padding: "5px 13px", background: N, color: "white", border: "none", borderRadius: 4, fontSize: 11, fontFamily: "monospace", cursor: "pointer", fontWeight: 700 }}>
+                  ✍️ Usar no Editor →
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ══════════════════ PROJETO ══════════════════ */}
+      {tab === "projeto" && (
+        <div style={{ flex: 1, overflowY: "auto", padding: "18px 22px" }}>
+          <div style={{ fontSize: 8, color: "#8a8278", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".13em", marginBottom: 14 }}>Configuração do projeto editorial</div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            {[{ l: "📖 Nome do livro / tratado", k: "nome", ph: "Ex: Direito Administrativo Contemporâneo — 3ª Edição" }, { l: "🏛 Área do Direito", k: "area", ph: "Ex: Direito Administrativo, Constitucional..." }].map(f => (
+              <div key={f.k}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: N, display: "block", marginBottom: 4 }}>{f.l}</label>
+                <input value={p[f.k] || ""} onChange={e => setProj(pr => ({ ...pr, [f.k]: e.target.value }))} placeholder={f.ph}
+                  style={{ width: "100%", padding: "7px 10px", border: "1px solid #d4cfc6", borderRadius: 4, fontFamily: "Georgia,serif", fontSize: 12, outline: "none" }}
+                  onFocus={e => e.target.style.borderColor = G} onBlur={e => e.target.style.borderColor = "#d4cfc6"} />
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 10, fontWeight: 700, color: N, display: "block", marginBottom: 4 }}>✍️ Autores / referência de estilo</label>
+            <input value={p.autores || ""} onChange={e => setProj(pr => ({ ...pr, autores: e.target.value }))}
+              placeholder="Ex: Celso Antônio Bandeira de Mello, Di Pietro, Marinoni, Didier Jr..."
+              style={{ width: "100%", padding: "7px 10px", border: "1px solid #d4cfc6", borderRadius: 4, fontFamily: "Georgia,serif", fontSize: 12, outline: "none" }}
+              onFocus={e => e.target.style.borderColor = G} onBlur={e => e.target.style.borderColor = "#d4cfc6"} />
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label style={{ fontSize: 10, fontWeight: 700, color: N, display: "block", marginBottom: 4 }}>✅ Capítulos concluídos (um por linha)</label>
+              <textarea value={(p.capsOk || []).join("\n")} onChange={e => setProj(pr => ({ ...pr, capsOk: e.target.value.split("\n").map(l => l.trim()).filter(Boolean) }))}
+                placeholder={"Cap. 1 — Fundamentos do Direito Administrativo\nCap. 2 — Princípios Constitucionais"}
+                style={{ width: "100%", minHeight: 120, padding: "7px 10px", border: "1px solid #d4cfc6", borderRadius: 4, fontFamily: "Georgia,serif", fontSize: 11, outline: "none", resize: "vertical", lineHeight: 1.7 }} />
+            </div>
+            <div>
+              <label style={{ fontSize: 10, fontWeight: 700, color: N, display: "block", marginBottom: 4 }}>⏳ Próximos capítulos (número|título)</label>
+              <textarea value={(p.capsProx || []).map(c => `${c.num}|${c.titulo}`).join("\n")}
+                onChange={e => setProj(pr => ({ ...pr, capsProx: e.target.value.split("\n").map(l => l.trim()).filter(Boolean).map(l => { const [n, ...r] = l.split("|"); return { num: n.trim(), titulo: r.join("|").trim() }; }).filter(c => c.num && c.titulo) }))}
+                placeholder={"3|Licitação — Lei 14.133/2021\n4|Contratos Administrativos\n5|Responsabilidade do Estado"}
+                style={{ width: "100%", minHeight: 120, padding: "7px 10px", border: "1px solid #d4cfc6", borderRadius: 4, fontFamily: "Georgia,serif", fontSize: 11, outline: "none", resize: "vertical", lineHeight: 1.7 }} />
+              <div style={{ fontSize: 8, color: "#aaa", fontFamily: "monospace", marginTop: 3 }}>número|título → botões de disparo na aba Início</div>
+            </div>
+          </div>
+
+          {totalC > 0 && (
+            <div style={{ background: "white", border: "1px solid #e5e0d8", borderRadius: 8, padding: "12px 16px", marginTop: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 7 }}>
+                <span style={{ fontSize: 11, fontFamily: "monospace", color: N }}>Progresso do tratado</span>
+                <span style={{ fontSize: 12, fontFamily: "monospace", color: G, fontWeight: 700 }}>{p.capsOk?.length || 0}/{totalC} ({pct}%)</span>
+              </div>
+              <div style={{ height: 5, background: "#e5e0d8", borderRadius: 3, overflow: "hidden", marginBottom: 9 }}>
+                <div style={{ height: "100%", width: `${pct}%`, background: "linear-gradient(90deg,#4ade80,#16a34a)", borderRadius: 3, transition: "width .6s" }} />
+              </div>
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                {(p.capsOk || []).map((c, i) => (
+                  <span key={i} style={{ fontSize: 8, padding: "2px 7px", background: "rgba(34,197,94,.1)", border: "1px solid rgba(34,197,94,.3)", color: "#166534", borderRadius: 3, fontFamily: "monospace" }}>
+                    ✓ {c.split("—")[0].trim()}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 7, marginTop: 16 }}>
+            <button onClick={() => { setTipo("sumario"); setTema(p.nome || "Tratado Jurídico"); setTab("editor"); }}
+              style={{ padding: "7px 16px", background: N, color: G, border: `1px solid ${G}`, borderRadius: 4, cursor: "pointer", fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>
+              📋 Gerar Sumário
+            </button>
+            <button onClick={() => { if (window.confirm("Limpar todo o projeto?")) { setProj({}); localStorage.removeItem("jep:proj"); } }}
+              style={{ padding: "7px 14px", background: "white", color: "#b91c1c", border: "1px solid #fca5a5", borderRadius: 4, cursor: "pointer", fontSize: 12, fontFamily: "monospace" }}>
+              🗑 Limpar
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
