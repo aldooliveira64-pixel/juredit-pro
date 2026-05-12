@@ -1,17 +1,16 @@
 /**
  * JUREDITPRO — Fase 2
- * Conectores DataJud — versão com múltiplos proxies e fallback automático
+ * Conectores DataJud CNJ — versão corrigida
+ * Sort: @timestamp (campo correto conforme wiki DataJud)
  */
 
 const DATAJUD_BASE   = 'https://api-publica.datajud.cnj.jus.br';
 const DATAJUD_APIKEY = 'cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw==';
 
-// Lista de proxies — tenta em ordem até um funcionar
 const PROXIES = [
   (url) => `https://proxy.cors.sh/${url}`,
   (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-  (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-  (url) => url, // direto, sem proxy (tenta por último)
+  (url) => url,
 ];
 
 const INDICES = {
@@ -49,20 +48,29 @@ function normalizar(hit) {
   };
 }
 
+// Query corrigida — sort por @timestamp conforme documentação DataJud
 function montarQuery(termo, pagina, tamanho) {
   return {
     size: tamanho,
     from: (pagina - 1) * tamanho,
     query: {
-      multi_match: {
-        query:  termo,
-        fields: ['ementa', 'decisao', 'classe.nome'],
+      bool: {
+        must: [
+          {
+            multi_match: {
+              query:  termo,
+              fields: ['ementa', 'decisao', 'classe.nome'],
+            },
+          },
+        ],
       },
     },
+    sort: [
+      { '@timestamp': { order: 'desc' } },
+    ],
   };
 }
 
-// Tenta cada proxy em ordem até um funcionar
 async function buscarComFallback(indice, termo, pagina = 1, tamanho = 10) {
   const urlAlvo = `${DATAJUD_BASE}/${indice}/_search`;
   const corpo   = JSON.stringify(montarQuery(termo, pagina, tamanho));
@@ -74,23 +82,21 @@ async function buscarComFallback(indice, termo, pagina = 1, tamanho = 10) {
       const resp = await fetch(url, {
         method:  'POST',
         headers: {
-          'Authorization':     `APIKey ${DATAJUD_APIKEY}`,
-          'Content-Type':      'application/json',
-          'x-cors-api-key':    'temp_guest', // requerido pelo proxy.cors.sh
+          'Authorization':  `APIKey ${DATAJUD_APIKEY}`,
+          'Content-Type':   'application/json',
+          'x-cors-api-key': 'temp_guest',
         },
         body: corpo,
       });
 
       if (!resp.ok) {
-        erros.push(`${url} → HTTP ${resp.status}`);
-        continue; // tenta próximo proxy
+        const txt = await resp.text().catch(() => '');
+        erros.push(`HTTP ${resp.status}: ${txt.substring(0, 120)}`);
+        continue;
       }
 
       const data = await resp.json();
-      if (!data.hits) {
-        erros.push(`${url} → sem hits`);
-        continue;
-      }
+      if (!data.hits) { erros.push('sem hits'); continue; }
 
       return {
         resultados: (data.hits.hits || []).map(normalizar),
@@ -98,25 +104,21 @@ async function buscarComFallback(indice, termo, pagina = 1, tamanho = 10) {
       };
 
     } catch (err) {
-      erros.push(`${url} → ${err.message}`);
+      erros.push(err.message);
       continue;
     }
   }
 
-  throw new Error(`Todos os proxies falharam:\n${erros.join('\n')}`);
+  throw new Error(`Falha: ${erros.join(' | ')}`);
 }
 
 class TribunalAPI {
-  constructor(options = {}) {
-    this.timeout = options.timeout || 20000;
-  }
-
   async _buscar(tribunal, termo, opcoes = {}) {
     const { pagina = 1, tamanho = 10 } = opcoes;
     const indice = INDICES[tribunal.toLowerCase()];
-    if (indice === undefined) throw new Error(`Tribunal "${tribunal}" não suportado.`);
-    const resultado = await buscarComFallback(indice, termo, pagina, tamanho);
-    return { ...resultado, termo, tribunal };
+    if (indice === undefined) throw new Error(`Tribunal "${tribunal}" inválido.`);
+    const res = await buscarComFallback(indice, termo, pagina, tamanho);
+    return { ...res, termo, tribunal };
   }
 
   async searchSTF(t,   op = {}) { return this._buscar('stf',   t, op); }
@@ -135,11 +137,12 @@ class TribunalAPI {
   async searchTJRS(t,  op = {}) { return this._buscar('tjrs',  t, op); }
 
   async searchTodos(termo, opcoes = {}) {
-    const principais = ['stf', 'stj', 'tcu', 'trf4'];
-    const respostas  = await Promise.allSettled(
-      principais.map(t => buscarComFallback(INDICES[t], termo, 1, 3))
+    const res = await Promise.allSettled(
+      ['stf','stj','tcu','trf4'].map(t =>
+        buscarComFallback(INDICES[t], termo, 1, 3)
+      )
     );
-    const resultados = respostas
+    const resultados = res
       .filter(r => r.status === 'fulfilled')
       .flatMap(r => r.value.resultados)
       .sort((a, b) => b.score - a.score)
