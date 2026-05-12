@@ -1,13 +1,15 @@
 /**
  * JUREDITPRO — Fase 2
- * Item 2.2: Conectores DataJud CNJ — versão GitHub Pages
- * APIKey oficial CNJ (pública)
+ * Item 2.2: Conectores DataJud CNJ
+ * Versão GitHub Pages — query simplificada + proxy corrigido
  */
- 
+
 const DATAJUD_BASE   = 'https://api-publica.datajud.cnj.jus.br';
 const DATAJUD_APIKEY = 'cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw==';
-const CORS_PROXY     = 'https://corsproxy.io/?';
- 
+
+// Proxy corrigido — formato com parâmetro url=
+const CORS_PROXY = 'https://corsproxy.io/?url=';
+
 const INDICES = {
   stf:   'api_publica_stf',
   stj:   'api_publica_stj',
@@ -25,7 +27,7 @@ const INDICES = {
   tjrs:  'api_publica_tjrs',
   todos: null,
 };
- 
+
 function normalizar(hit) {
   const s = hit._source || {};
   return {
@@ -43,85 +45,70 @@ function normalizar(hit) {
     fonte:           'DataJud/CNJ',
   };
 }
- 
+
+// Query mínima e compatível com DataJud
 function montarQuery(termo, pagina = 1, tamanho = 10) {
   return {
-    from: (pagina - 1) * tamanho,
     size: tamanho,
+    from: (pagina - 1) * tamanho,
     query: {
-      bool: {
-        should: [
-          {
-            multi_match: {
-              query:     termo,
-              fields:    ['ementa^3', 'decisao^2', 'classe.nome', 'orgaoJulgador.nome'],
-              type:      'best_fields',
-              fuzziness: 'AUTO',
-            },
-          },
-          {
-            match_phrase: {
-              ementa: { query: termo, boost: 5 },
-            },
-          },
-        ],
-        minimum_should_match: 1,
+      multi_match: {
+        query:     termo,
+        fields:    ['ementa', 'decisao', 'classe.nome'],
+        type:      'best_fields',
+        operator:  'or',
       },
     },
-    sort: [
-      { _score:         { order: 'desc' } },
-      { dataJulgamento: { order: 'desc' } },
-    ],
+    sort: [{ dataJulgamento: { order: 'desc' } }],
   };
 }
- 
+
 async function buscarIndice(indice, termo, pagina = 1, tamanho = 10) {
   const urlAlvo  = `${DATAJUD_BASE}/${indice}/_search`;
   const urlFinal = `${CORS_PROXY}${encodeURIComponent(urlAlvo)}`;
- 
+  const corpo    = JSON.stringify(montarQuery(termo, pagina, tamanho));
+
   const resp = await fetch(urlFinal, {
-    method: 'POST',
+    method:  'POST',
     headers: {
       'Authorization': `APIKey ${DATAJUD_APIKEY}`,
       'Content-Type':  'application/json',
+      'x-requested-with': 'XMLHttpRequest',
     },
-    body: JSON.stringify(montarQuery(termo, pagina, tamanho)),
+    body: corpo,
   });
- 
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} — ${indice}`);
- 
+
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => '');
+    throw new Error(`HTTP ${resp.status} — ${indice}: ${txt.substring(0, 100)}`);
+  }
+
   const data = await resp.json();
   return {
     resultados: (data.hits?.hits || []).map(normalizar),
     total:      data.hits?.total?.value || 0,
   };
 }
- 
+
 class TribunalAPI {
   constructor(options = {}) {
-    this.timeout = options.timeout || 15000;
+    this.timeout = options.timeout || 20000;
   }
- 
+
   async _buscar(tribunal, termo, opcoes = {}) {
     const { pagina = 1, tamanho = 10 } = opcoes;
     const trib   = tribunal.toLowerCase();
     const indice = INDICES[trib];
     if (indice === undefined) throw new Error(`Tribunal "${tribunal}" não suportado.`);
- 
-    const controller = new AbortController();
-    const timer      = setTimeout(() => controller.abort(), this.timeout);
- 
+
     try {
       const resultado = await buscarIndice(indice, termo, pagina, tamanho);
-      clearTimeout(timer);
       return { ...resultado, termo, tribunal: trib };
     } catch (err) {
-      clearTimeout(timer);
-      if (err.name === 'AbortError') throw new Error(`Timeout — ${tribunal.toUpperCase()}`);
       throw err;
     }
   }
- 
+
   async searchSTF(t,   op = {}) { return this._buscar('stf',   t, op); }
   async searchSTJ(t,   op = {}) { return this._buscar('stj',   t, op); }
   async searchTCU(t,   op = {}) { return this._buscar('tcu',   t, op); }
@@ -136,25 +123,20 @@ class TribunalAPI {
   async searchTJRJ(t,  op = {}) { return this._buscar('tjrj',  t, op); }
   async searchTJMG(t,  op = {}) { return this._buscar('tjmg',  t, op); }
   async searchTJRS(t,  op = {}) { return this._buscar('tjrs',  t, op); }
- 
+
   async searchTodos(termo, opcoes = {}) {
-    const principais = ['stf', 'stj', 'tcu', 'trf1', 'trf2', 'trf3', 'trf4', 'trf5'];
- 
-    const respostas = await Promise.allSettled(
+    const principais = ['stf', 'stj', 'tcu', 'trf4'];
+    const respostas  = await Promise.allSettled(
       principais.map(t => buscarIndice(INDICES[t], termo, 1, 3))
     );
- 
     const resultados = respostas
       .filter(r => r.status === 'fulfilled')
       .flatMap(r => r.value.resultados)
       .sort((a, b) => b.score - a.score)
       .slice(0, opcoes.tamanho || 10);
- 
     return { termo, tribunal: 'todos', resultados, total: resultados.length };
   }
 }
- 
+
 export default TribunalAPI;
- 
 if (typeof module !== 'undefined') module.exports = TribunalAPI;
- 
