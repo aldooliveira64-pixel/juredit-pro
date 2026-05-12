@@ -5,7 +5,7 @@
  */
 
 const JURAI_BASE  = 'https://jurisprudencias.ai/api/v1';
-const JURAI_TOKEN = 'jur_f414e3c6a32b86d0945ca15fe62c1b7983892dbe2936fd0f8e80b2fd18dd12b8';
+const JURAI_TOKEN = 'jur_98055eb446e5e887174dd1af82a2c3397b1f9dbda0ec6cd1e6ea4eb6a04f567f';
 
 // Proxies em ordem de tentativa
 const PROXIES = [
