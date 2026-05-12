@@ -1,145 +1,134 @@
 /**
  * JUREDITPRO — Fase 2
- * Conectores DataJud CNJ — query match simples na ementa
+ * Item 2.2: Conectores de Jurisprudência — versão DEFINITIVA
+ * API: jurisprudencias.ai — retorna ementas reais com texto completo
+ *
+ * Tribunais suportados: STF, STJ, TST, TRF3, TJRR, TJRL, TJRS, TJSC, TJSP
+ * Documentação: https://jurisprudencias.ai/api
  */
 
-const DATAJUD_BASE   = 'https://api-publica.datajud.cnj.jus.br';
-const DATAJUD_APIKEY = 'cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw==';
+const JURAI_BASE  = 'https://jurisprudencias.ai/api/v1';
+const JURAI_TOKEN = 'jur_f414e3c6a32b86d0945ca15fe62c1b7983892dbe2936fd0f8e80b2fd18dd12b8';
 
-const PROXIES = [
-  (url) => `https://proxy.cors.sh/${url}`,
-  (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-  (url) => url,
-];
-
-const INDICES = {
-  stf:   'api_publica_stf',
-  stj:   'api_publica_stj',
-  tcu:   'api_publica_tcu',
-  trf1:  'api_publica_trf1',
-  trf2:  'api_publica_trf2',
-  trf3:  'api_publica_trf3',
-  trf4:  'api_publica_trf4',
-  trf5:  'api_publica_trf5',
-  trf6:  'api_publica_trf6',
-  tjdft: 'api_publica_tjdft',
-  tjsp:  'api_publica_tjsp',
-  tjrj:  'api_publica_tjrj',
-  tjmg:  'api_publica_tjmg',
-  tjrs:  'api_publica_tjrs',
+// Mapa de siglas JurEditPro → código jurisprudencias.ai
+const TRIBUNAIS_MAP = {
+  stf:  'stf',
+  stj:  'stj',
+  tst:  'tst',
+  trf3: 'trf3',
+  tjsp: 'tjsp',
+  tjrs: 'tjrs',
+  tjsc: 'tjsc',
+  tjrj: 'tjrj',
   todos: null,
 };
 
-function normalizar(hit) {
-  const s = hit._source || {};
+// Normaliza resposta da jurisprudencias.ai para formato JurEditPro
+function normalizar(item) {
   return {
-    id:              hit._id || '',
-    tribunal:        s.tribunal?.sigla     || s.siglaTribunal || '',
-    numero_processo: s.numeroProcesso      || s.numero        || '',
-    classe:          s.classe?.nome        || '',
-    orgao_julgador:  s.orgaoJulgador?.nome || '',
-    relator:         s.relatorNome         || s.relator        || '',
-    data_julgamento: s.dataJulgamento      || s.data           || '',
-    ementa:          s.ementa              || '',
-    url:             s.inteiroteorUrl      || s.url            || '',
-    score:           hit._score            || 0,
-    fonte:           'DataJud/CNJ',
+    id:              item.id              || item.process_number || '',
+    tribunal:        (item.court          || '').toUpperCase(),
+    numero_processo: item.process_number  || '',
+    classe:          item.class_name      || '',
+    orgao_julgador:  item.organ           || item.rapporteur_organ || '',
+    relator:         item.rapporteur      || '',
+    data_julgamento: item.judgment_date   || item.publication_date || '',
+    ementa:          item.headnote        || item.excerpt         || '',
+    decisao:         item.full_text       ? item.full_text.substring(0, 500) : '',
+    url:             item.url             || item.source_url      || '',
+    score:           item.score           || 0,
+    fonte:           'jurisprudencias.ai',
   };
 }
 
-// Query simples e direta — match na ementa
-function montarQuery(termo, pagina, tamanho) {
-  return {
+// Busca em tribunal específico
+async function buscarTribunal(tribunal, termo, pagina = 1, tamanho = 10) {
+  const params = new URLSearchParams({
+    q:    termo,
+    page: pagina - 1, // API usa base 0
     size: tamanho,
-    from: (pagina - 1) * tamanho,
-    query: {
-      match: {
-        ementa: {
-          query:    termo,
-          operator: 'or',
-        },
-      },
+  });
+
+  const url  = `${JURAI_BASE}/courts/${tribunal}/decisions?${params}`;
+  const resp = await fetch(url, {
+    method:  'GET',
+    headers: {
+      'Authorization': `Bearer ${JURAI_TOKEN}`,
+      'Content-Type':  'application/json',
     },
-    sort: [{ '@timestamp': { order: 'desc' } }],
+  });
+
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => '');
+    throw new Error(`jurisprudencias.ai HTTP ${resp.status} [${tribunal}]: ${txt.substring(0, 100)}`);
+  }
+
+  const data = await resp.json();
+
+  // Normaliza diferentes formatos de resposta
+  const itens = data.decisions || data.results || data.data || data || [];
+  const total = data.total     || data.count    || itens.length;
+
+  return {
+    resultados: (Array.isArray(itens) ? itens : []).map(normalizar),
+    total,
   };
 }
 
-async function buscarComFallback(indice, termo, pagina = 1, tamanho = 10) {
-  const urlAlvo = `${DATAJUD_BASE}/${indice}/_search`;
-  const corpo   = JSON.stringify(montarQuery(termo, pagina, tamanho));
-  const erros   = [];
+// Busca em todos os tribunais em paralelo
+async function buscarTodos(termo, tamanho = 10) {
+  const tribunais  = ['stf', 'stj', 'trf3', 'tjsp', 'tjrs', 'tjsc'];
+  const respostas  = await Promise.allSettled(
+    tribunais.map(t => buscarTribunal(t, termo, 1, 3))
+  );
 
-  for (const proxy of PROXIES) {
-    const url = proxy(urlAlvo);
-    try {
-      const resp = await fetch(url, {
-        method:  'POST',
-        headers: {
-          'Authorization':  `APIKey ${DATAJUD_APIKEY}`,
-          'Content-Type':   'application/json',
-          'x-cors-api-key': 'temp_guest',
-        },
-        body: corpo,
-      });
+  const resultados = respostas
+    .filter(r => r.status === 'fulfilled')
+    .flatMap(r => r.value.resultados)
+    .sort((a, b) => (b.score || 0) - (a.score || 0))
+    .slice(0, tamanho);
 
-      if (!resp.ok) {
-        const txt = await resp.text().catch(() => '');
-        erros.push(`HTTP ${resp.status}: ${txt.substring(0, 80)}`);
-        continue;
-      }
+  const erros = respostas
+    .map((r, i) => r.status === 'rejected' ? `${tribunais[i]}: ${r.reason?.message}` : null)
+    .filter(Boolean);
 
-      const data = await resp.json();
-      if (!data.hits) { erros.push('sem hits'); continue; }
+  if (erros.length) console.warn('[TribunalAPI] Parcial:', erros);
 
-      return {
-        resultados: (data.hits.hits || []).map(normalizar),
-        total:      data.hits.total?.value || 0,
-      };
-
-    } catch (err) {
-      erros.push(err.message);
-    }
-  }
-  throw new Error(erros.join(' | '));
+  return { resultados, total: resultados.length };
 }
+
+// ─── Classe principal ─────────────────────────────────────────────────────────
 
 class TribunalAPI {
+  constructor(options = {}) {
+    this.timeout = options.timeout || 20000;
+  }
+
   async _buscar(tribunal, termo, opcoes = {}) {
     const { pagina = 1, tamanho = 10 } = opcoes;
-    const indice = INDICES[tribunal.toLowerCase()];
-    if (indice === undefined) throw new Error(`Tribunal "${tribunal}" inválido.`);
-    const res = await buscarComFallback(indice, termo, pagina, tamanho);
-    return { ...res, termo, tribunal };
+    const trib = tribunal.toLowerCase();
+
+    if (trib === 'todos') {
+      const res = await buscarTodos(termo, tamanho);
+      return { ...res, termo, tribunal: 'todos' };
+    }
+
+    const codigo = TRIBUNAIS_MAP[trib];
+    if (!codigo) throw new Error(`Tribunal "${tribunal}" não suportado. Use: ${Object.keys(TRIBUNAIS_MAP).join(', ')}`);
+
+    const res = await buscarTribunal(codigo, termo, pagina, tamanho);
+    return { ...res, termo, tribunal: trib };
   }
 
-  async searchSTF(t,   op = {}) { return this._buscar('stf',   t, op); }
-  async searchSTJ(t,   op = {}) { return this._buscar('stj',   t, op); }
-  async searchTCU(t,   op = {}) { return this._buscar('tcu',   t, op); }
-  async searchTRF1(t,  op = {}) { return this._buscar('trf1',  t, op); }
-  async searchTRF2(t,  op = {}) { return this._buscar('trf2',  t, op); }
-  async searchTRF3(t,  op = {}) { return this._buscar('trf3',  t, op); }
-  async searchTRF4(t,  op = {}) { return this._buscar('trf4',  t, op); }
-  async searchTRF5(t,  op = {}) { return this._buscar('trf5',  t, op); }
-  async searchTRF6(t,  op = {}) { return this._buscar('trf6',  t, op); }
-  async searchTJDFT(t, op = {}) { return this._buscar('tjdft', t, op); }
-  async searchTJSP(t,  op = {}) { return this._buscar('tjsp',  t, op); }
-  async searchTJRJ(t,  op = {}) { return this._buscar('tjrj',  t, op); }
-  async searchTJMG(t,  op = {}) { return this._buscar('tjmg',  t, op); }
-  async searchTJRS(t,  op = {}) { return this._buscar('tjrs',  t, op); }
-
-  async searchTodos(termo, opcoes = {}) {
-    const res = await Promise.allSettled(
-      ['stf','stj','tcu','trf4'].map(t =>
-        buscarComFallback(INDICES[t], termo, 1, 3)
-      )
-    );
-    const resultados = res
-      .filter(r => r.status === 'fulfilled')
-      .flatMap(r => r.value.resultados)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 10);
-    return { termo, tribunal: 'todos', resultados, total: resultados.length };
-  }
+  async searchSTF(t,   op = {}) { return this._buscar('stf',  t, op); }
+  async searchSTJ(t,   op = {}) { return this._buscar('stj',  t, op); }
+  async searchTST(t,   op = {}) { return this._buscar('tst',  t, op); }
+  async searchTRF3(t,  op = {}) { return this._buscar('trf3', t, op); }
+  async searchTJSP(t,  op = {}) { return this._buscar('tjsp', t, op); }
+  async searchTJRS(t,  op = {}) { return this._buscar('tjrs', t, op); }
+  async searchTJSC(t,  op = {}) { return this._buscar('tjsc', t, op); }
+  async searchTJRJ(t,  op = {}) { return this._buscar('tjrj', t, op); }
+  async searchTodos(t, op = {}) { return this._buscar('todos',t, op); }
 }
 
 export default TribunalAPI;
