@@ -1,7 +1,6 @@
 /**
  * JUREDITPRO — Fase 2
- * Conectores DataJud CNJ — versão corrigida
- * Sort: @timestamp (campo correto conforme wiki DataJud)
+ * Conectores DataJud CNJ — query match simples na ementa
  */
 
 const DATAJUD_BASE   = 'https://api-publica.datajud.cnj.jus.br';
@@ -48,26 +47,20 @@ function normalizar(hit) {
   };
 }
 
-// Query corrigida — sort por @timestamp conforme documentação DataJud
+// Query simples e direta — match na ementa
 function montarQuery(termo, pagina, tamanho) {
   return {
     size: tamanho,
     from: (pagina - 1) * tamanho,
     query: {
-      bool: {
-        must: [
-          {
-            multi_match: {
-              query:  termo,
-              fields: ['ementa', 'decisao', 'classe.nome'],
-            },
-          },
-        ],
+      match: {
+        ementa: {
+          query:    termo,
+          operator: 'or',
+        },
       },
     },
-    sort: [
-      { '@timestamp': { order: 'desc' } },
-    ],
+    sort: [{ '@timestamp': { order: 'desc' } }],
   };
 }
 
@@ -91,7 +84,7 @@ async function buscarComFallback(indice, termo, pagina = 1, tamanho = 10) {
 
       if (!resp.ok) {
         const txt = await resp.text().catch(() => '');
-        erros.push(`HTTP ${resp.status}: ${txt.substring(0, 120)}`);
+        erros.push(`HTTP ${resp.status}: ${txt.substring(0, 80)}`);
         continue;
       }
 
@@ -105,11 +98,9 @@ async function buscarComFallback(indice, termo, pagina = 1, tamanho = 10) {
 
     } catch (err) {
       erros.push(err.message);
-      continue;
     }
   }
-
-  throw new Error(`Falha: ${erros.join(' | ')}`);
+  throw new Error(erros.join(' | '));
 }
 
 class TribunalAPI {
