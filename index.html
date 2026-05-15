@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>JurEditPro Excellence — Redação Jurídica com IA</title>
-  <meta name="description" content="Redação jurídica acadêmica com Claude Sonnet 4 · ABNT · notas de rodapé · exportação .docx"/>
+  <title>JurEditPro Excellence v4 — Redação Jurídica com IA</title>
+  <meta name="description" content="Redação jurídica acadêmica com Claude Sonnet 4 · ABNT · notas de rodapé · exportação .docx · Bibliotecas Jurídicas"/>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27><text y=%27.9em%27 font-size=%2790%27>⚖️</text></svg>"/>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -146,12 +146,8 @@ ${fnEntries.map(([id, text]) => `<w:footnote w:id="${id}"><w:p><w:pPr><w:jc w:va
   return { dataUri, filename: fname };
 }
 
-// Exportar como Markdown
 function exportarMarkdown(text, nomeLivro) {
-  const clean = text
-    .replace(/\[Fonte:[^\]]+\]/g, "")
-    .replace(/^EMENTA_CAP:/gim, "> **Ementa:**")
-    .trim();
+  const clean = text.replace(/\[Fonte:[^\]]+\]/g, "").replace(/^EMENTA_CAP:/gim, "> **Ementa:**").trim();
   const slug = (nomeLivro || "JurEditPro").replace(/[^a-zA-Z0-9]/g, "_").slice(0, 28);
   const fname = slug + "_" + new Date().toISOString().slice(0, 10) + ".md";
   const blob = new Blob([clean], { type: "text/markdown;charset=utf-8" });
@@ -162,10 +158,8 @@ function exportarMarkdown(text, nomeLivro) {
 }
 
 // ══════════════════════════════════════════════
-// MOTORES DE IA — FASE 1: Claude com streaming
+// MOTORES DE IA
 // ══════════════════════════════════════════════
-
-// Claude com streaming SSE
 async function chamarClaudeStream(messages, system, onChunk, onStatus) {
   const WAITS = [15, 30, 60];
   for (let t = 0; t <= 3; t++) {
@@ -180,57 +174,33 @@ async function chamarClaudeStream(messages, system, onChunk, onStatus) {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json", "anthropic-version": "2023-06-01" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 16000,
-          stream: true,
-          system,
-          messages,
-        }),
+        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 16000, stream: true, system, messages }),
       });
       if (res.status === 529 || res.status === 503) { if (t < 3) continue; throw new Error("API sobrecarregada. Tente novamente."); }
       if (res.status === 429) { for (let s = 30; s > 0; s--) { onStatus?.(`Rate limit — ${s}s...`); await new Promise(r => setTimeout(r, 1000)); } t--; continue; }
       if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(`Erro ${res.status}: ${e?.error?.message || res.statusText}`); }
-
-      // Streaming SSE
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let full = "";
-      let buf = "";
+      const reader = res.body.getReader(); const decoder = new TextDecoder(); let full = "", buf = "";
       while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        const { done, value } = await reader.read(); if (done) break;
         buf += decoder.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop();
+        const lines = buf.split("\n"); buf = lines.pop();
         for (const line of lines) {
           if (!line.startsWith("data:")) continue;
-          const raw = line.slice(5).trim();
-          if (raw === "[DONE]") continue;
-          try {
-            const ev = JSON.parse(raw);
-            if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
-              full += ev.delta.text;
-              onChunk?.(full);
-            }
-          } catch {}
+          const raw = line.slice(5).trim(); if (raw === "[DONE]") continue;
+          try { const ev = JSON.parse(raw); if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") { full += ev.delta.text; onChunk?.(full); } } catch {}
         }
       }
       if (full) { onStatus?.(""); return full; }
       if (t < 3) continue;
       throw new Error("Resposta vazia.");
     } catch (e) {
-      // Fallback sem streaming se SSE não suportado
-      if (e.message && e.message.includes("stream")) {
-        return await chamarClaudeFallback(messages, system, onStatus);
-      }
+      if (e.message && e.message.includes("stream")) return await chamarClaudeFallback(messages, system, onStatus);
       if (t === 3) throw e;
     }
   }
   throw new Error("Falha após 4 tentativas.");
 }
 
-// Fallback sem streaming
 async function chamarClaudeFallback(messages, system, onStatus) {
   onStatus?.("⚖️ Claude Sonnet 4 gerando (modo direto)...");
   const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -241,9 +211,7 @@ async function chamarClaudeFallback(messages, system, onStatus) {
   if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(`Erro ${res.status}: ${e?.error?.message || res.statusText}`); }
   const data = await res.json();
   const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("").trim();
-  if (!text) throw new Error("Resposta vazia.");
-  onStatus?.("");
-  return text;
+  if (!text) throw new Error("Resposta vazia."); onStatus?.(""); return text;
 }
 
 async function chamarGemini(messages, system, apiKey, onStatus) {
@@ -256,25 +224,15 @@ async function chamarGemini(messages, system, apiKey, onStatus) {
       onStatus?.(`🔮 Gemini (${model}) gerando...`);
       try {
         const contents = messages.map(m => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
-        const res = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey.trim()}`,
-          { method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: system }] }, generationConfig: { maxOutputTokens: 8192, temperature: 0.75 } }) }
-        );
-        if (res.status === 404) break;
-        if (res.status === 429) { if (t < 2) continue; break; }
-        if (res.status === 400) {
-          const e = await res.json().catch(() => ({}));
-          if (e?.error?.status === "INVALID_ARGUMENT" || e?.error?.message?.includes("API_KEY")) throw new Error("Chave Gemini inválida. Verifique em aistudio.google.com/apikey");
-          break;
-        }
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey.trim()}`,
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: system }] }, generationConfig: { maxOutputTokens: 8192, temperature: 0.75 } }) });
+        if (res.status === 404) break; if (res.status === 429) { if (t < 2) continue; break; }
+        if (res.status === 400) { const e = await res.json().catch(() => ({})); if (e?.error?.status === "INVALID_ARGUMENT" || e?.error?.message?.includes("API_KEY")) throw new Error("Chave Gemini inválida."); break; }
         if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(`Gemini ${res.status}: ${e?.error?.message || res.statusText}`); }
-        const data = await res.json();
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-        if (text) { onStatus?.(""); return text; }
-        break;
+        const data = await res.json(); const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        if (text) { onStatus?.(""); return text; } break;
       } catch (e) {
-        if (e.message.includes("Failed to fetch")) throw new Error("Gemini bloqueado neste ambiente. Use o motor Claude — funciona sem chave.");
+        if (e.message.includes("Failed to fetch")) throw new Error("Gemini bloqueado neste ambiente. Use o motor Claude.");
         if (t === 2) throw e;
       }
     }
@@ -283,7 +241,7 @@ async function chamarGemini(messages, system, apiKey, onStatus) {
 }
 
 // ══════════════════════════════════════════════
-// CONFIGURAÇÃO
+// CONFIGURAÇÃO BASE
 // ══════════════════════════════════════════════
 const TIPOS_DOC = [
   { ic: "📚", id: "livro",    l: "Livro / Tratado",   desc: "Capítulo acadêmico · ABNT · notas rodapé reais",   cor: "#7c3aed" },
@@ -307,13 +265,91 @@ const TRIBUNAIS = [
   { l: "TRF5",      url: "https://www4.trf5.jus.br/Jurisprudencia/?q=" },
   { l: "BDjur",     url: "https://bdjur.stj.jus.br/jspui/simple-search?query=" },
   { l: "LexML",     url: "https://www.lexml.gov.br/busca/find?query=" },
-  { l: "Legislação", url: "https://www.planalto.gov.br/busca/?q=" },
+  { l: "Legislação",url: "https://www.planalto.gov.br/busca/?q=" },
   { l: "TJDFT",     url: "https://pesquisajuris.tjdft.jus.br/IndexadorAcordaos-web/sistj?visaoId=tjdf.sistj.acordaoeletronico.buscaindexada.apresentacao.VisaoBuscaAcordaoGet&nomePagina=buscaLivre&internet=1&parametros.baseSelecionada=BASE_ACORDAO_TODAS&parametros.texto=" },
 ];
 
-const AREAS = ["Direito Administrativo", "Direito Constitucional", "Direito Civil", "Direito Penal", "Direito do Trabalho", "Direito Tributário", "Direito Processual Civil", "Direito Empresarial", "Direito Ambiental", "Direito do Consumidor", "Direito Previdenciário", "Direito Digital", "Direito Internacional"];
+const AREAS = ["Direito Administrativo","Direito Constitucional","Direito Civil","Direito Penal","Direito do Trabalho","Direito Tributário","Direito Processual Civil","Direito Empresarial","Direito Ambiental","Direito do Consumidor","Direito Previdenciário","Direito Digital","Direito Internacional"];
 
-// ── FASE 2: Biblioteca de templates rápidos ──
+// ══════════════════════════════════════════════
+// FASE 3 — BIBLIOTECAS JURÍDICAS
+// ══════════════════════════════════════════════
+const BIBLIOTECAS = [
+  {
+    cat: "Doutrina & Artigos Científicos",
+    cor: "#7c3aed",
+    icCat: "📚",
+    desc: "Periódicos revisados por pares · acesso aberto e premium",
+    items: [
+      { ic: "🎓", l: "CAPES Periódicos", desc: "Portal oficial — 45.000+ títulos científicos indexados. Acesso gratuito para IES conveniadas.", url: "https://www.periodicos.capes.gov.br/", busca: "https://www.periodicos.capes.gov.br/?option=com_pcollection&mn=70&smn=79", tag: "Gratuito c/ IES" },
+      { ic: "🔬", l: "SciELO Brasil", desc: "Scientific Electronic Library Online — Maior coleção de acesso aberto da América Latina.", url: "https://scielo.br/", busca: "https://search.scielo.org/?q=", tag: "Acesso Aberto" },
+      { ic: "🌐", l: "Oasisbr / IBICT", desc: "Portal de publicações científicas brasileiras em acesso aberto — teses, dissertações e artigos.", url: "https://oasisbr.ibict.br/", busca: "https://oasisbr.ibict.br/vufind/Search/Results?lookfor=", tag: "Acesso Aberto" },
+      { ic: "🎯", l: "Google Acadêmico", desc: "Motor de busca científico multilíngue. Inclui citações, versões e artigos relacionados.", url: "https://scholar.google.com.br/", busca: "https://scholar.google.com.br/scholar?q=", tag: "Global" },
+      { ic: "📰", l: "Dialnet Jurídico", desc: "Base ibero-americana especializada em Direito — doutrina, legislação e jurisprudência.", url: "https://dialnet.unirioja.es/", busca: "https://dialnet.unirioja.es/buscar/documentos?querysDismax.DOCUMENTAL_TODO=", tag: "Ibero-América" },
+      { ic: "⚖️", l: "Revista dos Tribunais", desc: "RT Online — doutrina e jurisprudência premium. Principal periódico jurídico do Brasil.", url: "https://www.thomsonreuters.com.br/pt/juridico/rt-online.html", busca: "https://www.thomsonreuters.com.br/pt/juridico/rt-online.html", tag: "Premium" },
+      { ic: "📋", l: "Revista de Direito Adm.", desc: "RDA — Fórum. Periódico histórico especializado em Direito Administrativo brasileiro.", url: "https://www.forumconhecimento.com.br/periodico/117", busca: "https://www.forumconhecimento.com.br/periodico/117", tag: "Administrativo" },
+      { ic: "🔍", l: "SSRN — Law Network", desc: "Social Science Research Network — papers jurídicos pré-publicação e working papers.", url: "https://www.ssrn.com/index.cfm/en/", busca: "https://papers.ssrn.com/sol3/results.cfm?RequestTimeout=50000000&txtkey1=", tag: "Internacional" },
+    ]
+  },
+  {
+    cat: "Teses & Dissertações",
+    cor: "#0369a1",
+    icCat: "🎓",
+    desc: "Pesquisa acadêmica stricto sensu · mestrado · doutorado",
+    items: [
+      { ic: "🏛", l: "BDTD / IBICT", desc: "Biblioteca Digital Brasileira de Teses e Dissertações — busca integrada de 106 instituições.", url: "https://bdtd.ibict.br/", busca: "https://bdtd.ibict.br/vufind/Search/Results?lookfor=", tag: "Nacional" },
+      { ic: "📄", l: "CAPES — Banco de Teses", desc: "Catálogo oficial de teses e dissertações aprovadas em programas de pós-graduação brasileiros.", url: "https://catalogodeteses.capes.gov.br/", busca: "https://catalogodeteses.capes.gov.br/catalogo-teses/#!/", tag: "Oficial" },
+      { ic: "🔭", l: "Repositório USP", desc: "Biblioteca Digital de Teses e Dissertações da Universidade de São Paulo.", url: "https://www.teses.usp.br/", busca: "https://www.teses.usp.br/index.php?option=com_jumi&fileid=11&Itemid=152&lang=pt-br&cainfo=&txtTitulo=", tag: "USP" },
+      { ic: "🎓", l: "Repositório UERJ", desc: "Repositório institucional — Universidade do Estado do Rio de Janeiro.", url: "https://www.bdtd.uerj.br/", busca: "https://www.bdtd.uerj.br/handle/1/4?mode=simple&query=", tag: "UERJ" },
+      { ic: "📚", l: "Repositório UNICAMP", desc: "Repositório da Produção Científica e Intelectual da UNICAMP.", url: "https://repositorio.unicamp.br/", busca: "https://repositorio.unicamp.br/acervo/busca?q=", tag: "UNICAMP" },
+      { ic: "🏫", l: "Repositório UFRJ", desc: "Repositório Pantheon da Universidade Federal do Rio de Janeiro.", url: "https://pantheon.ufrj.br/", busca: "https://pantheon.ufrj.br/discover?query=", tag: "UFRJ" },
+    ]
+  },
+  {
+    cat: "Legislação",
+    cor: "#b45309",
+    icCat: "📜",
+    desc: "Normas federais · estaduais · regulamentação · decreto",
+    items: [
+      { ic: "🏛", l: "Planalto.gov.br", desc: "Legislação federal — leis, decretos, medidas provisórias, portarias. Fonte primária oficial.", url: "https://www.planalto.gov.br/", busca: "https://www.planalto.gov.br/busca/?q=", tag: "Oficial" },
+      { ic: "📜", l: "Senado Federal", desc: "Legislação brasileira compilada — senado.leg.br. Acompanhamento de projetos de lei.", url: "https://legis.senado.leg.br/legislacao/", busca: "https://legis.senado.leg.br/legislacao/ListaPublicacoes.action?tipo=SV&txtAssunto=", tag: "Oficial" },
+      { ic: "🏢", l: "Câmara dos Deputados", desc: "Sistema de informações legislativas — projetos, emendas, normas vigentes.", url: "https://www.camara.leg.br/legislacao", busca: "https://www.camara.leg.br/busca-portal?contextoBusca=BuscaLegislacao&q=", tag: "Oficial" },
+      { ic: "📋", l: "LexML Brasil", desc: "Portal de informação jurídica integrado — normas + jurisprudência + doutrina em XML.", url: "https://www.lexml.gov.br/", busca: "https://www.lexml.gov.br/busca/find?query=", tag: "Integrado" },
+      { ic: "⚡", l: "JusBrasil — Legislação", desc: "Pesquisa integrada com linguagem natural — leis, normas e decisões em uma só busca.", url: "https://www.jusbrasil.com.br/legislacao/", busca: "https://www.jusbrasil.com.br/busca?q=", tag: "Unificado" },
+      { ic: "🔎", l: "Legisweb", desc: "Legislação estadual e municipal brasileira — normas de todos os entes federativos.", url: "https://www.legisweb.com.br/", busca: "https://www.legisweb.com.br/legislacao/?id=", tag: "Estadual/Municipal" },
+    ]
+  },
+  {
+    cat: "Jurisprudência & Tribunais",
+    cor: "#0f766e",
+    icCat: "⚖️",
+    desc: "STF · STJ · TCU · TRFs · Tribunais Estaduais · CNJ",
+    items: [
+      { ic: "⚖️", l: "STF — Jurisprudência", desc: "Supremo Tribunal Federal — busca em acórdãos, súmulas vinculantes e informativos.", url: "https://jurisprudencia.stf.jus.br/", busca: "https://jurisprudencia.stf.jus.br/pages/search?base=acordaos&query=", tag: "STF" },
+      { ic: "⚖️", l: "STJ — SCON", desc: "Superior Tribunal de Justiça — pesquisa na base de jurisprudência SCON.", url: "https://scon.stj.jus.br/SCON/", busca: "https://scon.stj.jus.br/SCON/pesquisar.jsp?q=", tag: "STJ" },
+      { ic: "📊", l: "TCU — Jurisprudência", desc: "Tribunal de Contas da União — acórdãos, decisões e normas de controle.", url: "https://jurisprudencia.tcu.gov.br/", busca: "https://pesquisa.apps.tcu.gov.br/resultado/jurisprudencia/", tag: "TCU" },
+      { ic: "📚", l: "BDJur / STJ", desc: "Biblioteca Digital Jurídica do STJ — periódicos, livros e doutrina digitalizada.", url: "https://bdjur.stj.jus.br/", busca: "https://bdjur.stj.jus.br/jspui/simple-search?query=", tag: "BDJur" },
+      { ic: "🔍", l: "CNJ — Jurisprudência", desc: "Conselho Nacional de Justiça — súmulas, resoluções e jurisprudência unificada.", url: "https://jurisprudencia.cnj.jus.br/", busca: "https://jurisprudencia.cnj.jus.br/#/pesquisa?q=", tag: "CNJ" },
+      { ic: "📋", l: "TJSP — e-SAJ", desc: "Tribunal de Justiça de São Paulo — pesquisa de jurisprudência paulista.", url: "https://esaj.tjsp.jus.br/cjpg/pesquisar.do", busca: "https://esaj.tjsp.jus.br/cjpg/pesquisar.do?dados.pesquisaLivre=", tag: "TJSP" },
+    ]
+  },
+  {
+    cat: "Internacional & Comparado",
+    cor: "#be185d",
+    icCat: "🌍",
+    desc: "Direito comparado · tratados · organismos internacionais",
+    items: [
+      { ic: "🌍", l: "EUR-Lex (União Europeia)", desc: "Acesso ao direito da União Europeia — regulamentos, diretivas, jurisprudência do TJUE.", url: "https://eur-lex.europa.eu/", busca: "https://eur-lex.europa.eu/search.html?text=", tag: "UE" },
+      { ic: "🌐", l: "UN Treaty Collection", desc: "Coleção de tratados internacionais da ONU — 560.000+ documentos multilaterais.", url: "https://treaties.un.org/", busca: "https://treaties.un.org/Pages/UNTSOnline.aspx?id=1&clang=_en", tag: "ONU" },
+      { ic: "📚", l: "HeinOnline — Law", desc: "Base premium — 3.000+ revistas jurídicas, 100.000+ documentos históricos.", url: "https://heinonline.org/", busca: "https://heinonline.org/HOL/LuceneSearch?collection=all&terms=", tag: "Premium" },
+      { ic: "🏛", l: "Corte IDH — CIDH", desc: "Corte Interamericana de Direitos Humanos — sentenças e opiniões consultivas.", url: "https://www.corteidh.or.cr/", busca: "https://www.corteidh.or.cr/busqueda.cfm?searchword=", tag: "CIDH" },
+      { ic: "⚡", l: "WorldLII", desc: "World Legal Information Institute — jurisprudência de 123 países em acesso aberto.", url: "https://www.worldlii.org/", busca: "https://www.worldlii.org/cgi-bin/sinosrch.cgi?method=boolean&query=", tag: "Mundo" },
+      { ic: "🔍", l: "Westlaw International", desc: "Base jurídica premium — direito comparado EUA, RU, Canadá e Europa.", url: "https://international.westlaw.com/", busca: "https://international.westlaw.com/search/run/default.aspx?query=", tag: "Premium" },
+    ]
+  },
+];
+
+// Templates rápidos
 const TEMPLATES = [
   { g: "Administrativo", items: [
     { ic: "🏛", l: "Licitação — Lei 14.133/2021", tema: "Licitação pública e dispensa na Nova Lei de Licitações — Lei 14.133/2021", tipo: "livro" },
@@ -354,7 +390,6 @@ REFERÊNCIA DE ESTILO: ${proj?.autores || "Marinoni, Di Pietro, Celso Antônio B
 ══ INTEGRIDADE ACADÊMICA ABSOLUTA ══
 ✗ NUNCA invente número de processo, relator, data, ementa ou página de obra
 ✗ Se dado não confirmado → use "a doutrina majoritária sustenta..." (sem citar autoria inventada)
-✗ Jurisprudência só com: número + relator + data + ementa — tudo verificado
 ✓ Se em dúvida sobre dado → omita a referência específica, não invente
 
 ══ REGRAS DE OURO ══
@@ -366,29 +401,157 @@ REFERÊNCIA DE ESTILO: ${proj?.autores || "Marinoni, Di Pietro, Celso Antônio B
 }
 
 function buildPrompt(tipo, problema, tema, area, nivel, proj) {
-  const ctx = problema
-    ? `\n══ PROBLEMA / CONTEXTO FORNECIDO PELO USUÁRIO ══\n${problema}\n\nEste problema/contexto deve ser a BASE e o FIO CONDUTOR de todo o desenvolvimento.\n`
-    : "";
+  const ctx = problema ? `\n══ PROBLEMA / CONTEXTO FORNECIDO PELO USUÁRIO ══\n${problema}\n\nEste problema/contexto deve ser a BASE e o FIO CONDUTOR de todo o desenvolvimento.\n` : "";
   const h = `${ctx}\nÁrea: ${area} | Nível: ${nivel} | Projeto: "${proj?.nome || ""}"\n\n`;
-
   const ps = {
-    livro: `${h}TEMA: ${tema}\n\nGere capítulo COMPLETO de tratado jurídico acadêmico.\n\nESTRUTURA OBRIGATÓRIA:\nCapítulo [N]\nTÍTULO DO CAPÍTULO EM CAIXA ALTA E NEGRITO\nEMENTA_CAP: [subtemas separados por ponto]\n---\n\n**Abertura — Contextualização e Problema Central**\n[3 parágrafos: §1 contexto normativo · §2 problema dogmático · §3 plano do capítulo]\n\n**Conceito, Natureza Jurídica e Delimitação Dogmática**\n[4+ parágrafos com notas ¹²³]\n\n**Regime Jurídico: Requisitos, Elementos e Efeitos**\n[4+ parágrafos · legislação vigente 2025]\n\n**Análise Jurisprudencial STJ e STF (2020–2025)**\n> *EMENTA: [resumo]. (STJ, REsp X.XXX/UF, Rel. Min. Nome, Nª Turma, DJe DD.MM.AAAA.)*\n[Mínimo 4 precedentes]\n\n**Controvérsias Doutrinárias e Tendências 2025**\n[3+ parágrafos]\n\nSíntese do Capítulo\n[3 parágrafos de conclusão]\n\n② NOTAS DE RODAPÉ\n¹ Prenome Sobrenome, *Título*, N. ed., Cidade, Editora, ano, p. XX.\n[MÍNIMO 25 NOTAS]\n\n④ AVALIAÇÃO TÉCNICA\nCritérios (0–10): rigor técnico | clareza | coesão | progressão | fontes | estilo | originalidade`,
-
-    sumario: `${h}OBRA: ${tema}\n\nGere SUMÁRIO COMPLETO.\n\nREGRAS:\n• Numeração ABNT (1 / 1.1 / 1.1.1)\n• Mínimo 10 capítulos · 5-6 seções por capítulo\n• Títulos REAIS e ESPECÍFICOS\n• Páginas estimadas ponteadas: 1.1 Conceito......................15\n• Seções pré e pós-textuais\n\nAo final:\n\`\`\`CAPITULOS\n1|Título exato\n2|Título exato\n...\n\`\`\``,
-
-    parecer: `${h}QUESTÃO JURÍDICA: ${tema}\n\nElabore PARECER JURÍDICO COMPLETO.\n\nEMENTA\n[5-8 linhas em maiúsculas]\n\nI — RELATÓRIO\n[Qualificação · questão · documentos · delimitação]\n\nII — FUNDAMENTAÇÃO JURÍDICA\n**1. Análise do Quadro Normativo** [legislação 2025]\n**2. Posicionamento Doutrinário** [correntes com notas ¹²³]\n**3. Jurisprudência dos Tribunais Superiores** [STJ/STF/TCU · ementas em bloco]\n**4. Síntese e Conclusão Fundamentada**\n\nIII — CONCLUSÃO\n[Respostas numeradas · recomendações]\n\n② NOTAS DE RODAPÉ [mínimo 20]`,
-
-    peticao: `${h}OBJETO DA AÇÃO: ${tema}\n\nRedije PETIÇÃO JURÍDICA COMPLETA.\n\nEXCELENTÍSSIMO SENHOR DOUTOR JUIZ DE DIREITO DA [VARA] DA COMARCA DE [CIDADE]\n\n[NOME DA PARTE], [qualificação completa], vem propor a presente\n\nAÇÃO [TIPO COMPLETO]\n\nem face de [NOME DO RÉU]:\n\nI — DOS FATOS\n[Narrativa cronológica clara]\n\nII — DO DIREITO\n**1. Da Legitimidade e Interesse de Agir**\n**2. Do Mérito — Fundamento Legal** [artigos vigentes]\n**3. Do Mérito — Fundamento Doutrinário** [notas ¹²³]\n**4. Da Jurisprudência Aplicável** [precedentes STJ/STF]\n\nIII — DOS PEDIDOS\na) O recebimento e processamento;\nb) [Pedido principal];\nc) [Pedidos cumulados];\nd) Honorários e custas.\n\nDá-se à causa o valor de R$ [valor].\n[Local], [data].\n[Advogado] — OAB/[UF] nº XXXXX\n\n② NOTAS DE RODAPÉ [mínimo 15]`,
-
-    artigo: `${h}TEMA: ${tema}\n\nEscreva ARTIGO CIENTÍFICO JURÍDICO COMPLETO (Qualis A2 CAPES).\n\nTÍTULO EM MAIÚSCULAS\nSubtítulo\n\nResumo [150-250 palavras]\nPalavras-chave: [5-7]\n\nAbstract / Keywords\n\n1 INTRODUÇÃO [Contextualização · problema · hipótese · metodologia]\n2 [SEÇÃO PRINCIPAL]\n2.1 [Conceito e base normativa]\n2.2 [Desenvolvimento teórico]\n2.3 [Análise jurisprudencial]\n2.4 [Controvérsias]\n3 [SEÇÃO COMPLEMENTAR]\n4 CONSIDERAÇÕES FINAIS\nREFERÊNCIAS [ABNT NBR 6023:2018 — mínimo 20]\n\n② NOTAS DE RODAPÉ`,
-
-    apostila: `${h}TEMA: ${tema}\n\nCrie APOSTILA JURÍDICA DIDÁTICA COMPLETA.\n\nAPRESENTAÇÃO\nOBJETIVOS DE APRENDIZAGEM [6-8 objetivos]\n\nMÓDULO 1 — FUNDAMENTOS [1.1 Conceito · 1.2 Evolução · 1.3 Base legal 2025 · 1.4 Exemplos · 1.5 Jurisprudência · 📌 MAPA MENTAL]\nMÓDULO 2 — REGIME JURÍDICO\nMÓDULO 3 — APLICAÇÃO PRÁTICA\nMÓDULO 4 — JURISPRUDÊNCIA COMENTADA [5+ precedentes]\n\nEXERCÍCIOS DE FIXAÇÃO [10 questões]\nGABARITO COMENTADO\nREFERÊNCIAS`,
-
-    ementa: `${h}OBJETO: ${tema}\n\nRedije EMENTA JURÍDICA técnica (modelo STJ).\n\nFORMATO: parágrafo único\n[ÁREA]. [Subtema]. [Questão jurídica]. [Tese]. [Fundamento normativo]. [Resultado].\n\nMáximo 15 linhas · linguagem técnica · sem parágrafos separados.`,
-
-    contrato: `${h}OBJETO: ${tema}\n\nElabore MINUTA CONTRATUAL COMPLETA.\n\n[TIPO DE INSTRUMENTO]\n\nCONTRATANTE: [qualificação];\nCONTRATADA: [qualificação];\n\nCLÁUSULA PRIMEIRA — DO OBJETO E ESCOPO\nCLÁUSULA SEGUNDA — OBRIGAÇÕES DA CONTRATANTE\nCLÁUSULA TERCEIRA — OBRIGAÇÕES DA CONTRATADA\nCLÁUSULA QUARTA — PRAZO DE VIGÊNCIA\nCLÁUSULA QUINTA — VALOR E PAGAMENTO\nCLÁUSULA SEXTA — RESCISÃO\nCLÁUSULA SÉTIMA — PENALIDADES E MULTAS\nCLÁUSULA OITAVA — PROPRIEDADE INTELECTUAL E CONFIDENCIALIDADE\nCLÁUSULA NONA — DISPOSIÇÕES GERAIS\nCLÁUSULA DÉCIMA — FORO\n\n[Local], [data].\n___________________________  ___________________________\nCONTRATANTE                 CONTRATADA\nTESTEMUNHAS: 1.___ CPF:___ · 2.___ CPF:___`,
+    livro: `${h}TEMA: ${tema}\n\nGere capítulo COMPLETO de tratado jurídico acadêmico.\n\nESTRUTURA OBRIGATÓRIA:\nCapítulo [N]\nTÍTULO DO CAPÍTULO EM CAIXA ALTA E NEGRITO\nEMENTA_CAP: [subtemas separados por ponto]\n---\n\n**Abertura — Contextualização e Problema Central**\n[3 parágrafos]\n\n**Conceito, Natureza Jurídica e Delimitação Dogmática**\n[4+ parágrafos com notas ¹²³]\n\n**Regime Jurídico: Requisitos, Elementos e Efeitos**\n[4+ parágrafos · legislação vigente 2025]\n\n**Análise Jurisprudencial STJ e STF (2020–2025)**\n> *EMENTA: [resumo]. (STJ, REsp X.XXX/UF, Rel. Min. Nome, Nª Turma, DJe DD.MM.AAAA.)*\n[Mínimo 4 precedentes]\n\n**Controvérsias Doutrinárias e Tendências 2025**\n[3+ parágrafos]\n\nSíntese do Capítulo\n[3 parágrafos]\n\n② NOTAS DE RODAPÉ\n¹ Prenome Sobrenome, *Título*, N. ed., Cidade, Editora, ano, p. XX.\n[MÍNIMO 25 NOTAS]`,
+    sumario: `${h}OBRA: ${tema}\n\nGere SUMÁRIO COMPLETO.\n\nREGRAS:\n• Numeração ABNT (1 / 1.1 / 1.1.1)\n• Mínimo 10 capítulos · 5-6 seções por capítulo\n• Títulos REAIS e ESPECÍFICOS\n• Páginas estimadas ponteadas: 1.1 Conceito......................15\n• Seções pré e pós-textuais`,
+    parecer: `${h}QUESTÃO JURÍDICA: ${tema}\n\nElabore PARECER JURÍDICO COMPLETO.\n\nEMENTA\n[5-8 linhas em maiúsculas]\n\nI — RELATÓRIO\n[Qualificação · questão · documentos · delimitação]\n\nII — FUNDAMENTAÇÃO JURÍDICA\n**1. Análise do Quadro Normativo**\n**2. Posicionamento Doutrinário**\n**3. Jurisprudência dos Tribunais Superiores**\n**4. Síntese e Conclusão Fundamentada**\n\nIII — CONCLUSÃO\n[Respostas numeradas · recomendações]\n\n② NOTAS DE RODAPÉ [mínimo 20]`,
+    peticao: `${h}OBJETO DA AÇÃO: ${tema}\n\nRedije PETIÇÃO JURÍDICA COMPLETA.\n\nEXCELENTÍSSIMO SENHOR DOUTOR JUIZ DE DIREITO DA [VARA] DA COMARCA DE [CIDADE]\n\nI — DOS FATOS\nII — DO DIREITO\n**1. Da Legitimidade e Interesse de Agir**\n**2. Do Mérito — Fundamento Legal**\n**3. Do Mérito — Fundamento Doutrinário**\n**4. Da Jurisprudência Aplicável**\n\nIII — DOS PEDIDOS\n\n② NOTAS DE RODAPÉ [mínimo 15]`,
+    artigo: `${h}TEMA: ${tema}\n\nEscreva ARTIGO CIENTÍFICO JURÍDICO COMPLETO (Qualis A2 CAPES).\n\nTÍTULO EM MAIÚSCULAS\nResumo [150-250 palavras]\nPalavras-chave: [5-7]\nAbstract / Keywords\n\n1 INTRODUÇÃO\n2 [SEÇÃO PRINCIPAL]\n2.1 [Conceito]\n2.2 [Desenvolvimento]\n2.3 [Jurisprudência]\n3 CONSIDERAÇÕES FINAIS\nREFERÊNCIAS [ABNT NBR 6023:2018 — mínimo 20]\n\n② NOTAS DE RODAPÉ`,
+    apostila: `${h}TEMA: ${tema}\n\nCrie APOSTILA JURÍDICA DIDÁTICA COMPLETA.\n\nAPRESENTAÇÃO\nOBJETIVOS [6-8]\nMÓDULO 1 — FUNDAMENTOS\nMÓDULO 2 — REGIME JURÍDICO\nMÓDULO 3 — APLICAÇÃO PRÁTICA\nMÓDULO 4 — JURISPRUDÊNCIA COMENTADA [5+ precedentes]\nEXERCÍCIOS [10 questões]\nGABARITO COMENTADO\nREFERÊNCIAS`,
+    ementa: `${h}OBJETO: ${tema}\n\nRedije EMENTA JURÍDICA técnica (modelo STJ).\n\nFORMATO: parágrafo único\n[ÁREA]. [Subtema]. [Questão jurídica]. [Tese]. [Fundamento normativo]. [Resultado].\n\nMáximo 15 linhas · linguagem técnica.`,
+    contrato: `${h}OBJETO: ${tema}\n\nElabore MINUTA CONTRATUAL COMPLETA.\n\nCLÁUSULA PRIMEIRA — DO OBJETO E ESCOPO\nCLÁUSULA SEGUNDA — OBRIGAÇÕES\nCLÁUSULA TERCEIRA — PRAZO E VALOR\nCLÁUSULA QUARTA — RESCISÃO\nCLÁUSULA QUINTA — PENALIDADES\nCLÁUSULA SEXTA — FORO`,
   };
   return ps[tipo] || ps.livro;
+}
+
+// ══════════════════════════════════════════════
+// PROMPTS DA FASE 3 — BIBLIOTECAS IA
+// ══════════════════════════════════════════════
+function buildBiblioPrompt(modo, termo, area) {
+  const modos = {
+    mapa: `Você é um especialista em pesquisa jurídica acadêmica brasileira. Crie um MAPA DE PESQUISA COMPLETO para o seguinte tema:
+
+TEMA: ${termo}
+ÁREA: ${area}
+
+══ ESTRUTURA OBRIGATÓRIA DO MAPA DE PESQUISA ══
+
+**① DESCRITORES E TERMOS DE BUSCA**
+Liste 15-20 termos e combinações para buscar nas bases de dados:
+• Termos em português (simples e compostos)
+• Termos em inglês e espanhol (para bases internacionais)
+• Operadores booleanos recomendados (AND, OR, NOT)
+• Truncagem e curingas (*) para SciELO, CAPES
+
+**② PRINCIPAIS AUTORES DA DOUTRINA**
+Liste 8-12 autores fundamentais para este tema:
+• Nome completo · Especialidade · Obras principais conhecidas
+• Se não tiver certeza, indique "doutrina dominante em [subtema]"
+
+**③ LEGISLAÇÃO-BASE (vigente 2025)**
+Liste as normas primárias para pesquisar:
+• Constituição Federal — artigos relevantes
+• Leis ordinárias e complementares
+• Decretos e regulamentos
+
+**④ BASES RECOMENDADAS POR PRIORIDADE**
+Indique qual base usar para cada tipo de fonte:
+• Para doutrina recente → [base específica]
+• Para jurisprudência → [tribunal e base]
+• Para teses e dissertações → [repositório]
+• Para legislação comparada → [base internacional]
+
+**⑤ PERIÓDICOS ESPECIALIZADOS**
+Liste 5-8 revistas jurídicas indexadas que publicam sobre este tema.
+
+**⑥ ESTRATÉGIA DE BUSCA RECOMENDADA**
+Descreva em 3-5 passos a sequência ideal de pesquisa para este tema, incluindo filtros de data (priorizar 2019-2025), idioma e tipo de publicação.
+
+**⑦ LACUNAS E OPORTUNIDADES**
+Aponte 3-5 subtemas pouco explorados ou questões em aberto na doutrina que representam lacunas de pesquisa.
+
+⚠️ NUNCA invente títulos de obras ou referências específicas que não tem certeza. Use "obras de [autor] sobre [tema]" quando incerto.`,
+
+    abnt: `Você é um especialista em normas ABNT para citações jurídicas. Formate a referência abaixo no padrão ABNT NBR 6023:2018, e também formate-a como nota de rodapé jurídica padrão dos tribunais superiores brasileiros.
+
+REFERÊNCIA BRUTA FORNECIDA:
+${termo}
+
+══ RESPOSTA OBRIGATÓRIA ══
+
+**① REFERÊNCIA ABNT COMPLETA (NBR 6023:2018)**
+[Formate conforme o tipo: livro, capítulo, artigo de periódico, monografia, tese, dissertação, acórdão, lei, site — identifique automaticamente o tipo]
+
+**② NOTA DE RODAPÉ (padrão doutrina jurídica)**
+[Formato abreviado para primeira citação e formato IBIDEM/Op. cit. para repetições]
+
+**③ CITAÇÃO NO TEXTO (sistema autor-data)**
+[Para uso em textos acadêmicos — sobrenome, ano, página]
+
+**④ TIPO DE OBRA IDENTIFICADO**
+[Livro / Capítulo de livro / Artigo de periódico / Tese / Dissertação / Acórdão / Lei / Site / Outro]
+
+**⑤ OBSERVAÇÕES SOBRE A NORMA**
+[Alertas sobre campos faltantes, inconsistências ou dúvidas na referência original]
+
+⚠️ Se faltar informação essencial (autor, ano, título), indique com [informação não fornecida] em vez de inventar.`,
+
+    verificar: `Você é um especialista em verificação de fontes jurídicas acadêmicas. Analise criticamente a seguinte referência ou citação:
+
+REFERÊNCIA/CITAÇÃO A VERIFICAR:
+${termo}
+
+══ ANÁLISE CRÍTICA COMPLETA ══
+
+**① VIABILIDADE DA REFERÊNCIA**
+Avalie: esta referência parece plausível e verificável? (Sim / Parcialmente / Não)
+
+**② ANÁLISE POR ELEMENTO**
+• Autor: [existe? é reconhecido na área?]
+• Título: [parece real? corresponde à área?]
+• Editora/Revista: [existe? é respeitada?]
+• Ano: [compatível com o autor?]
+• Número de processo (se jurisprudência): [formato correto?]
+
+**③ ONDE VERIFICAR**
+Liste os passos exatos para confirmar esta fonte:
+• URL específica para buscar
+• Campo de pesquisa a usar
+• Termos exatos para localizar
+
+**④ SINAIS DE ALERTA**
+Aponte qualquer elemento suspeito, inconsistente ou que sugira referência inventada.
+
+**⑤ RECOMENDAÇÃO FINAL**
+[Use com segurança / Verifique antes de usar / Não use sem confirmação]
+
+⚠️ Seja honesto: se você mesmo não consegue confirmar a referência, diga claramente.`,
+
+    sintetizar: `Você é um pesquisador jurídico sênior. Com base nos materiais encontrados nas bibliotecas jurídicas sobre o tema abaixo, elabore uma SÍNTESE BIBLIOGRÁFICA ANALÍTICA no padrão de revisão de literatura acadêmica.
+
+TEMA: ${termo}
+ÁREA: ${area}
+
+══ ESTRUTURA DA SÍNTESE BIBLIOGRÁFICA ══
+
+**① ESTADO DA ARTE**
+Panorama geral do conhecimento produzido sobre o tema nos últimos 10 anos (2015-2025).
+
+**② CORRENTES DOUTRINÁRIAS PREDOMINANTES**
+Identifique 2-4 correntes principais, com:
+• Posição central defendida
+• Principais representantes (sem inventar — use "doutrina dominante" se incerto)
+• Fundamento normativo de cada corrente
+
+**③ PRODUÇÃO ACADÊMICA RECENTE (2020-2025)**
+Descreva o que a literatura mais recente tem debatido sobre o tema:
+• Questões centrais do debate atual
+• Impacto de novas legislações ou julgamentos
+
+**④ JURISPRUDÊNCIA PREDOMINANTE**
+Tendências dos tribunais superiores sobre o tema (sem inventar números de processo específicos).
+
+**⑤ RECOMENDAÇÕES DE LEITURA**
+Sugira tipos de fontes (sem inventar obras específicas):
+• Tipo de fonte mais relevante para aprofundamento
+• Área geográfica de maior produção
+• Idiomas recomendados
+
+⚠️ NUNCA invente obras, autores ou citações específicas. Use sempre "a doutrina tem sustentado..." ou "autores especializados em [área] defendem..." quando incerto.`
+  };
+  return modos[modo] || modos.mapa;
 }
 
 // ══════════════════════════════════════════════
@@ -418,9 +581,10 @@ function Linhas({ text, dark }) {
     if (!l) return <div key={i} style={{ height: 7 }} />;
     if (/^\*\*[^*]+\*\*$/.test(l)) return <div key={i} style={{ fontWeight: 700, color: fgHead, marginTop: 16, marginBottom: 5, fontSize: 13.5, borderLeft: `3px solid ${blockBorder}`, paddingLeft: 10 }}>{l.replace(/\*\*/g, "")}</div>;
     if (/^>/.test(l)) return <div key={i} style={{ borderLeft: `4px solid ${blockBorder}`, paddingLeft: 14, margin: "10px 0", color: dark ? "#c9a84c" : "#3a2800", fontStyle: "italic", fontSize: 12, lineHeight: 1.75, background: blockBg, padding: "8px 14px", borderRadius: "0 4px 4px 0" }}>{l.replace(/^>\s*/, "")}</div>;
-    if (/^[①②③④⑤]/.test(l)) return <div key={i} style={{ fontWeight: 700, fontSize: 11, color: dark ? "#f87171" : "#8b1a1a", borderBottom: `1px solid ${dark ? "#2a3550" : "#e5e0d8"}`, paddingBottom: 4, marginTop: 18, marginBottom: 7, textTransform: "uppercase", letterSpacing: ".06em" }}>{l}</div>;
+    if (/^[①②③④⑤⑥⑦]/.test(l)) return <div key={i} style={{ fontWeight: 700, fontSize: 11, color: dark ? "#f87171" : "#8b1a1a", borderBottom: `1px solid ${dark ? "#2a3550" : "#e5e0d8"}`, paddingBottom: 4, marginTop: 18, marginBottom: 7, textTransform: "uppercase", letterSpacing: ".06em" }}>{l}</div>;
     if (/^[¹²³⁴⁵⁶⁷⁸⁹]/.test(l) || (/^\d{1,2}[.\s]/.test(l) && l.length < 400)) return <div key={i} style={{ fontSize: 11, color: fgSub, lineHeight: 1.65, paddingLeft: 20, textIndent: "-20px", marginBottom: 3 }}>{l}</div>;
     if (/^#{1,3}\s/.test(l)) return <div key={i} style={{ fontWeight: 700, color: fgHead, marginTop: 16, marginBottom: 5, fontSize: 13.5 }}>{l.replace(/^#+\s/, "")}</div>;
+    if (/^•/.test(l)) return <div key={i} style={{ fontSize: 12, color: fg, lineHeight: 1.75, paddingLeft: 16, textIndent: "-16px", marginBottom: 4 }}>{l}</div>;
     const segs = l.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/);
     return <p key={i} style={{ margin: "0 0 7px", textAlign: "justify", lineHeight: 1.9, color: fg }}>{segs.map((s, j) => {
       if (/^\*\*[^*]+\*\*$/.test(s)) return <strong key={j}>{s.slice(2, -2)}</strong>;
@@ -430,7 +594,6 @@ function Linhas({ text, dark }) {
   })}</>);
 }
 
-// Toast simples
 function Toast({ msg, onClose }) {
   useEffect(() => { if (msg) { const t = setTimeout(onClose, 3000); return () => clearTimeout(t); } }, [msg]);
   if (!msg) return null;
@@ -460,34 +623,41 @@ function App() {
   const [tema, setTema] = useState("");
   const [area, setArea] = useState(() => load("jep:area", "Direito Administrativo"));
   const [nivel, setNivel] = useState(() => load("jep:nivel", "Doutorado e tratados acadêmicos"));
-
-  // ── FASE 2: Sessões ──
-  const [sessoes, setSessoes] = useState(() => load("jep:sessoes", [])); // [{id, nome, msgs, hist, criadaEm}]
+  const [sessoes, setSessoes] = useState(() => load("jep:sessoes", []));
   const [sessaoId, setSessaoId] = useState(null);
   const [msgs, setMsgs] = useState([]);
   const [hist, setHist] = useState([]);
   const [showSessoes, setShowSessoes] = useState(false);
-
   const [loading, setLoading] = useState(false);
-  const [streamText, setStreamText] = useState(""); // texto sendo transmitido em tempo real
+  const [streamText, setStreamText] = useState("");
   const [status, setStatus] = useState("");
   const [cpFb, setCpFb] = useState({});
   const [proj, setProj] = useState(() => load("jep:proj", {}));
   const [bTermo, setBTermo] = useState("");
   const [bResult, setBResult] = useState("");
   const [bLoad, setBLoad] = useState(false);
-  const [showTemplates, setShowTemplates] = useState(false);
   const [toast, setToast] = useState("");
+
+  // ── FASE 3: estado Bibliotecas ──
+  const [biblioTermo, setBiblioTermo] = useState("");
+  const [biblioModo, setBiblioModo] = useState("mapa");
+  const [biblioResult, setBiblioResult] = useState("");
+  const [biblioLoading, setBiblioLoading] = useState(false);
+  const [biblioStream, setBiblioStream] = useState("");
+  const [biblioFiltro, setBiblioFiltro] = useState("todos"); // "todos" | por categoria
+  const [fontesSalvas, setFontesSalvas] = useState(() => load("jep:fontes", []));
+  const [biblioAbntInput, setBiblioAbntInput] = useState("");
+  const [biblioSearchTerm, setBiblioSearchTerm] = useState(""); // para filtrar cards
 
   const botRef = useRef(null);
   const taRef = useRef(null);
+  const biblioRef = useRef(null);
   const p = { nome: "", area: "", autores: "", capsOk: [], capsProx: [], ...proj };
   const totalC = (p.capsOk?.length || 0) + (p.capsProx?.length || 0);
   const pct = totalC > 0 ? Math.round((p.capsOk?.length || 0) / totalC * 100) : 0;
   const totD = msgs.filter(m => m.role === "assistant").length;
   const totW = msgs.filter(m => m.role === "assistant").reduce((s, m) => s + contarPalavras(m.text), 0);
 
-  // Aplicar dark mode no body
   useEffect(() => { document.body.className = darkMode ? "dark" : ""; save("jep:dark", darkMode); }, [darkMode]);
   useEffect(() => { try { localStorage.setItem("jep:gkey", geminiKey); } catch {} }, [geminiKey]);
   useEffect(() => { save("jep:motor", motor); }, [motor]);
@@ -495,9 +665,11 @@ function App() {
   useEffect(() => { save("jep:area", area); }, [area]);
   useEffect(() => { save("jep:nivel", nivel); }, [nivel]);
   useEffect(() => { save("jep:sessoes", sessoes); }, [sessoes]);
+  useEffect(() => { save("jep:fontes", fontesSalvas); }, [fontesSalvas]);
   useEffect(() => { botRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs, loading, streamText]);
+  useEffect(() => { biblioRef.current?.scrollIntoView({ behavior: "smooth" }); }, [biblioResult, biblioStream]);
 
-  // ── Cores tema ──
+  // Cores tema
   const N = darkMode ? "#e8dcc8" : "#0f1a33";
   const G = "#c9a84c";
   const CR = darkMode ? "#0c1220" : "#f5f1ea";
@@ -507,38 +679,24 @@ function App() {
   const inp = { fontFamily: "Georgia,serif", fontSize: 12, padding: "6px 9px", border: `1px solid ${BORDER}`, borderRadius: 4, background: CARD, color: N, outline: "none" };
   const bOut = (bc = BORDER, fc = TEXT2) => ({ padding: "5px 12px", border: `1px solid ${bc}`, borderRadius: 4, background: CARD, color: fc, cursor: "pointer", fontSize: 11, fontFamily: "monospace", transition: "all .15s" });
 
-  // ── Sessões ──
+  // Sessões
   const salvarSessao = useCallback(() => {
     if (!msgs.length) return;
     const nome = (tema || "Sessão").slice(0, 50) + " · " + new Date().toLocaleDateString("pt-BR");
     const nova = { id: Date.now(), nome, msgs, hist, criadaEm: new Date().toISOString() };
-    if (sessaoId) {
-      setSessoes(s => s.map(x => x.id === sessaoId ? { ...nova, id: sessaoId } : x));
-    } else {
-      setSessoes(s => [nova, ...s].slice(0, 20));
-      setSessaoId(nova.id);
-    }
+    if (sessaoId) { setSessoes(s => s.map(x => x.id === sessaoId ? { ...nova, id: sessaoId } : x)); }
+    else { setSessoes(s => [nova, ...s].slice(0, 20)); setSessaoId(nova.id); }
     setToast("✓ Sessão salva!");
   }, [msgs, hist, tema, sessaoId]);
 
-  const carregarSessao = (sess) => {
-    setMsgs(sess.msgs); setHist(sess.hist); setSessaoId(sess.id);
-    setShowSessoes(false); setTab("editor");
-    setToast(`📂 "${sess.nome.slice(0, 40)}" carregada`);
-  };
+  const carregarSessao = (sess) => { setMsgs(sess.msgs); setHist(sess.hist); setSessaoId(sess.id); setShowSessoes(false); setTab("editor"); setToast(`📂 "${sess.nome.slice(0, 40)}" carregada`); };
+  const novaSessao = () => { setMsgs([]); setHist([]); setSessaoId(null); setStreamText(""); setToast("Nova sessão iniciada"); };
 
-  const novaSessao = () => {
-    setMsgs([]); setHist([]); setSessaoId(null); setStreamText("");
-    setToast("Nova sessão iniciada");
-  };
-
-  // ── Geração ──
+  // Geração principal
   const send = useCallback(async (override) => {
     const txt = override !== undefined ? String(override).trim() : tema.trim();
     if (!txt || loading) return;
-    if (motor === "gemini" && !geminiKey?.trim()) {
-      setStatus("❌ Cole a chave Gemini nas configurações, ou use o motor Claude (sem chave)."); setTab("editor"); return;
-    }
+    if (motor === "gemini" && !geminiKey?.trim()) { setStatus("❌ Cole a chave Gemini nas configurações, ou use o motor Claude (sem chave)."); setTab("editor"); return; }
     setTab("editor");
     const prompt = override !== undefined ? txt : buildPrompt(tipo, problema, txt, area, nivel, p);
     const label = TIPOS_DOC.find(t => t.id === tipo)?.l || "Texto";
@@ -548,11 +706,8 @@ function App() {
     setLoading(true); setStatus(""); setStreamText("");
     try {
       let reply;
-      if (motor === "gemini") {
-        reply = await chamarGemini(nh, buildSys(area, nivel, p), geminiKey, setStatus);
-      } else {
-        reply = await chamarClaudeStream(nh, buildSys(area, nivel, p), (partial) => setStreamText(partial), setStatus);
-      }
+      if (motor === "gemini") { reply = await chamarGemini(nh, buildSys(area, nivel, p), geminiKey, setStatus); }
+      else { reply = await chamarClaudeStream(nh, buildSys(area, nivel, p), (partial) => setStreamText(partial), setStatus); }
       setStreamText("");
       setHist(h => [...h, { role: "assistant", content: reply }]);
       setMsgs(m => [...m, { role: "assistant", text: reply, motor, ts: Date.now() }]);
@@ -560,13 +715,12 @@ function App() {
     } catch (e) {
       let msg = e.message;
       if (msg.includes("Failed to fetch") && motor === "gemini") msg = "Gemini bloqueado neste ambiente. Use o motor Claude — funciona sem chave.";
-      setStreamText("");
-      setMsgs(m => [...m, { role: "assistant", text: `⚠️ ${msg}`, motor }]);
-      setStatus("");
+      setStreamText(""); setMsgs(m => [...m, { role: "assistant", text: `⚠️ ${msg}`, motor }]); setStatus("");
     }
     setLoading(false);
   }, [hist, tema, problema, loading, tipo, area, nivel, p, motor, geminiKey]);
 
+  // Busca jurisprudência
   async function buscar() {
     if (!bTermo || bLoad) return;
     setBLoad(true); setBResult("");
@@ -574,24 +728,54 @@ function App() {
     const prompt = `Pesquise e cite jurisprudência atualizada STF e STJ (2020-2025) sobre: ${bTermo}\n\nPara cada precedente: número, tribunal, relator, turma, data, ementa resumida e tese. Mínimo 5 precedentes. Se não tiver certeza, use "o STJ tem decidido que..." — nunca invente.`;
     try {
       let text;
-      if (motor === "gemini" && geminiKey?.trim()) {
-        text = await chamarGemini([{ role: "user", content: prompt }], sys, geminiKey, () => {});
-      } else {
-        text = await chamarClaudeStream([{ role: "user", content: prompt }], sys, (p) => setBResult(p), () => {});
-      }
+      if (motor === "gemini" && geminiKey?.trim()) { text = await chamarGemini([{ role: "user", content: prompt }], sys, geminiKey, () => {}); }
+      else { text = await chamarClaudeStream([{ role: "user", content: prompt }], sys, (p) => setBResult(p), () => {}); }
       setBResult(text || "");
-    } catch (e) {
-      let msg = e.message;
-      if (msg.includes("Failed to fetch")) msg = "Gemini bloqueado. Mude o motor para Claude.";
-      setBResult("⚠️ " + msg);
-    }
+    } catch (e) { let msg = e.message; if (msg.includes("Failed to fetch")) msg = "Gemini bloqueado. Mude o motor para Claude."; setBResult("⚠️ " + msg); }
     setBLoad(false);
+  }
+
+  // ── FASE 3: Pesquisa em Bibliotecas com IA ──
+  async function pesquisarBiblio() {
+    const termo = (biblioModo === "abnt" ? biblioAbntInput : biblioTermo).trim();
+    if (!termo || biblioLoading) return;
+    setBiblioLoading(true); setBiblioResult(""); setBiblioStream("");
+    const sys = `Você é um especialista em pesquisa jurídica acadêmica e normas ABNT. Área de atuação: ${area}. Responda sempre em português do Brasil com máxima precisão acadêmica. Jamais invente referências, autores ou obras específicas.`;
+    const prompt = buildBiblioPrompt(biblioModo, termo, area);
+    try {
+      const text = await chamarClaudeStream(
+        [{ role: "user", content: prompt }], sys,
+        (partial) => setBiblioStream(partial), () => {}
+      );
+      setBiblioStream(""); setBiblioResult(text || "");
+    } catch (e) { setBiblioStream(""); setBiblioResult("⚠️ " + e.message); }
+    setBiblioLoading(false);
+  }
+
+  function salvarFonte(texto) {
+    const nova = { id: Date.now(), texto: texto.slice(0, 500), ts: new Date().toISOString(), area };
+    setFontesSalvas(f => [nova, ...f].slice(0, 30));
+    setToast("📌 Fonte salva!");
+  }
+
+  function enviarParaEditor(texto) {
+    setProblema(texto.slice(0, 800));
+    setTab("editor");
+    setTimeout(() => taRef.current?.focus(), 200);
+    setToast("✍️ Fonte enviada para o campo Contexto do Editor");
   }
 
   async function hCopy(text, id) {
     const ok = await copiar(text);
     if (ok) { setCpFb(f => ({ ...f, [id]: true })); setTimeout(() => setCpFb(f => ({ ...f, [id]: false })), 2500); setToast("📋 Copiado!"); }
   }
+
+  const modosBiblio = [
+    { id: "mapa",      ic: "🗺️", l: "Mapa de Pesquisa",    desc: "Descritores, autores e bases recomendadas" },
+    { id: "abnt",      ic: "📐", l: "Formatar ABNT",        desc: "Cole referência bruta → ABNT + nota rodapé" },
+    { id: "verificar", ic: "🔍", l: "Verificar Fonte",      desc: "Avalia credibilidade e como confirmar" },
+    { id: "sintetizar",ic: "📊", l: "Síntese Bibliográfica",desc: "Estado da arte + correntes doutrinárias" },
+  ];
 
   // ── RENDER ──
   return (
@@ -602,6 +786,7 @@ function App() {
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes jup { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes jb { 0%,80%,100% { transform: translateY(0); opacity:.4; } 40% { transform: translateY(-5px); opacity:1; } }
+        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.5; } }
         button:active { transform: scale(.97); }
         .tc:hover { border-color: #c9a84c !important; transform: translateY(-2px); box-shadow: 0 4px 14px rgba(201,168,76,.18); }
         .tb:hover { background: #0f1a33 !important; color: white !important; }
@@ -610,68 +795,57 @@ function App() {
         .motor-btn:hover { opacity:.85; }
         .sess-row:hover { background: rgba(201,168,76,.08) !important; }
         .tpl-item:hover { border-color: #c9a84c !important; background: rgba(201,168,76,.05) !important; cursor:pointer; }
+        .bib-card:hover { border-color: #c9a84c !important; transform: translateY(-1px); box-shadow: 0 3px 10px rgba(0,0,0,.12); }
+        .bib-modo:hover { opacity:.85; }
+        .fonte-row:hover { background: rgba(201,168,76,.05) !important; }
+        .abrir-btn:hover { background: #0f1a33 !important; color: white !important; }
+        .buscar-btn:hover { background: rgba(201,168,76,.15) !important; }
       `}</style>
 
       {/* ══ HEADER ══ */}
-      <div style={{ background: `linear-gradient(90deg,#08122a,${darkMode?"#0d1b33":"#0f1a33"},#1a2744)`, padding: "9px 16px", display: "flex", alignItems: "center", gap: 10, borderBottom: `2px solid ${G}`, flexShrink: 0 }}>
+      <div style={{ background: `linear-gradient(90deg,#08122a,#0f1a33,#1a2744)`, padding: "9px 16px", display: "flex", alignItems: "center", gap: 10, borderBottom: `2px solid ${G}`, flexShrink: 0 }}>
         <div style={{ width: 36, height: 36, borderRadius: "50%", border: `2px solid ${G}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, background: "rgba(201,168,76,.1)", flexShrink: 0 }}>⚖️</div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: 15, color: "white", lineHeight: 1.2 }}>
             Jur<span style={{ color: G }}>Edit</span>Pro
-            <span style={{ fontSize: 8, fontFamily: "monospace", color: "rgba(201,168,76,.7)", marginLeft: 7, letterSpacing: ".1em", fontWeight: 400 }}>EXCELLENCE v3</span>
+            <span style={{ fontSize: 8, fontFamily: "monospace", color: "rgba(201,168,76,.7)", marginLeft: 7, letterSpacing: ".1em", fontWeight: 400 }}>EXCELLENCE v4 · FASE 3</span>
           </div>
           <div style={{ fontSize: 8, color: "rgba(255,255,255,.3)", letterSpacing: ".07em", textTransform: "uppercase", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {p.nome || "Redação jurídica acadêmica · streaming · histórico de sessões · templates"}
+            {p.nome || "Redação jurídica · streaming · bibliotecas · ABNT · templates · sessões"}
           </div>
         </div>
-
-        {/* Seletor motor */}
         <div style={{ display: "flex", background: "rgba(255,255,255,.07)", border: "1px solid rgba(255,255,255,.12)", borderRadius: 6, overflow: "hidden", flexShrink: 0 }}>
           {[{ id: "claude", label: "⚖️ Claude", sub: "sem chave" }, { id: "gemini", label: "🔮 Gemini", sub: "chave Google" }].map(m => (
             <button key={m.id} className="motor-btn" onClick={() => setMotor(m.id)}
               style={{ padding: "5px 11px", border: "none", background: motor === m.id ? G : "transparent", color: motor === m.id ? "#0f1a33" : "rgba(255,255,255,.6)", cursor: "pointer", fontSize: 10, fontFamily: "monospace", fontWeight: motor === m.id ? 700 : 400, transition: "all .15s", display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
-              <span>{m.label}</span>
-              <span style={{ fontSize: 7, opacity: .8 }}>{m.sub}</span>
+              <span>{m.label}</span><span style={{ fontSize: 7, opacity: .8 }}>{m.sub}</span>
             </button>
           ))}
         </div>
-
-        {/* Dark mode */}
-        <button onClick={() => setDarkMode(d => !d)}
-          style={{ padding: "6px 9px", background: "rgba(255,255,255,.08)", border: "1px solid rgba(255,255,255,.12)", color: "rgba(255,255,255,.7)", borderRadius: 5, cursor: "pointer", fontSize: 14, transition: "all .15s" }}
-          title="Alternar modo escuro">
-          {darkMode ? "☀️" : "🌙"}
-        </button>
-
-        {/* Sessões */}
-        <button onClick={() => setShowSessoes(!showSessoes)}
-          style={{ padding: "6px 10px", background: showSessoes ? G : "rgba(255,255,255,.08)", border: `1px solid ${showSessoes ? G : "rgba(255,255,255,.12)"}`, color: showSessoes ? "#0f1a33" : "rgba(255,255,255,.7)", borderRadius: 5, cursor: "pointer", fontSize: 10, fontFamily: "monospace", transition: "all .15s", whiteSpace: "nowrap" }}>
+        <button onClick={() => setDarkMode(d => !d)} style={{ padding: "6px 9px", background: "rgba(255,255,255,.08)", border: "1px solid rgba(255,255,255,.12)", color: "rgba(255,255,255,.7)", borderRadius: 5, cursor: "pointer", fontSize: 14 }} title="Alternar modo escuro">{darkMode ? "☀️" : "🌙"}</button>
+        <button onClick={() => setShowSessoes(!showSessoes)} style={{ padding: "6px 10px", background: showSessoes ? G : "rgba(255,255,255,.08)", border: `1px solid ${showSessoes ? G : "rgba(255,255,255,.12)"}`, color: showSessoes ? "#0f1a33" : "rgba(255,255,255,.7)", borderRadius: 5, cursor: "pointer", fontSize: 10, fontFamily: "monospace", transition: "all .15s", whiteSpace: "nowrap" }}>
           📂 {sessoes.length > 0 ? sessoes.length : "Sessões"}
         </button>
-
-        <button onClick={() => setShowCfg(!showCfg)}
-          style={{ padding: "6px 11px", background: showCfg ? G : "rgba(255,255,255,.08)", border: `1px solid ${showCfg ? G : "rgba(255,255,255,.15)"}`, color: showCfg ? "#0f1a33" : "rgba(255,255,255,.7)", borderRadius: 5, cursor: "pointer", fontSize: 10, fontFamily: "monospace", fontWeight: 700, transition: "all .15s" }}>
-          ⚙ Config
-        </button>
+        <button onClick={() => setShowCfg(!showCfg)} style={{ padding: "6px 11px", background: showCfg ? G : "rgba(255,255,255,.08)", border: `1px solid ${showCfg ? G : "rgba(255,255,255,.15)"}`, color: showCfg ? "#0f1a33" : "rgba(255,255,255,.7)", borderRadius: 5, cursor: "pointer", fontSize: 10, fontFamily: "monospace", fontWeight: 700, transition: "all .15s" }}>⚙ Config</button>
       </div>
 
       {/* ══ PAINEL SESSÕES ══ */}
       {showSessoes && (
         <div style={{ background: darkMode ? "#070f1c" : "#07101e", borderBottom: "1px solid rgba(201,168,76,.2)", padding: "10px 18px", flexShrink: 0, maxHeight: 220, overflowY: "auto" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <span style={{ fontSize: 9, color: G, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".1em" }}>📂 Histórico de sessões (últimas 20)</span>
+            <span style={{ fontSize: 9, color: G, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".1em" }}>📂 Histórico de sessões</span>
             <div style={{ display: "flex", gap: 6 }}>
               <button onClick={salvarSessao} style={{ padding: "4px 10px", background: "rgba(34,197,94,.15)", border: "1px solid rgba(34,197,94,.3)", color: "#4ade80", borderRadius: 4, cursor: "pointer", fontSize: 10, fontFamily: "monospace" }}>💾 Salvar atual</button>
               <button onClick={novaSessao} style={{ padding: "4px 10px", background: "rgba(201,168,76,.15)", border: `1px solid ${G}40`, color: G, borderRadius: 4, cursor: "pointer", fontSize: 10, fontFamily: "monospace" }}>+ Nova sessão</button>
             </div>
           </div>
           {sessoes.length === 0 ? (
-            <div style={{ fontSize: 11, color: "rgba(255,255,255,.3)", fontFamily: "monospace", padding: "8px 0" }}>Nenhuma sessão salva ainda. Gere um texto e clique em "Salvar atual".</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,.3)", fontFamily: "monospace", padding: "8px 0" }}>Nenhuma sessão salva.</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
               {sessoes.map(sess => (
                 <div key={sess.id} className="sess-row" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 4, cursor: "pointer", transition: "background .12s" }} onClick={() => carregarSessao(sess)}>
-                  <span style={{ fontSize: 10, flex: 1, color: "rgba(255,255,255,.7)", fontFamily: "Georgia,serif" }}>{sess.nome}</span>
+                  <span style={{ fontSize: 10, flex: 1, color: "rgba(255,255,255,.7)" }}>{sess.nome}</span>
                   <span style={{ fontSize: 9, color: "rgba(255,255,255,.3)", fontFamily: "monospace", whiteSpace: "nowrap" }}>{sess.msgs.filter(m=>m.role==="assistant").length} docs · {new Date(sess.criadaEm).toLocaleDateString("pt-BR")}</span>
                   <button onClick={e => { e.stopPropagation(); setSessoes(s => s.filter(x => x.id !== sess.id)); }} style={{ padding: "2px 6px", background: "transparent", border: "none", color: "rgba(255,100,100,.6)", cursor: "pointer", fontSize: 11 }}>✕</button>
                 </div>
@@ -687,15 +861,11 @@ function App() {
           <div style={{ background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 6, padding: "8px 12px", minWidth: 180 }}>
             <div style={{ fontSize: 9, color: G, fontFamily: "monospace", marginBottom: 5, textTransform: "uppercase", letterSpacing: ".08em" }}>Motor ativo</div>
             {motor === "claude" ? (
-              <div>
-                <div style={{ fontSize: 12, color: "#4ade80", fontWeight: 700 }}>✓ Claude Sonnet 4 · streaming</div>
-                <div style={{ fontSize: 9, color: "rgba(255,255,255,.4)", fontFamily: "monospace", marginTop: 2 }}>Texto aparece em tempo real.<br/>Funciona sem chave — máxima qualidade.</div>
-              </div>
+              <div><div style={{ fontSize: 12, color: "#4ade80", fontWeight: 700 }}>✓ Claude Sonnet 4 · streaming</div>
+                <div style={{ fontSize: 9, color: "rgba(255,255,255,.4)", fontFamily: "monospace", marginTop: 2 }}>Texto em tempo real. Sem chave.</div></div>
             ) : (
-              <div>
-                <div style={{ fontSize: 12, color: geminiKey ? "#4ade80" : "#fca5a5", fontWeight: 700 }}>{geminiKey ? "✓ Gemini 2.5 Flash" : "⚠ Sem chave"}</div>
-                <div style={{ fontSize: 9, color: "rgba(255,255,255,.4)", fontFamily: "monospace", marginTop: 2 }}>Requer chave Google AI Studio.</div>
-              </div>
+              <div><div style={{ fontSize: 12, color: geminiKey ? "#4ade80" : "#fca5a5", fontWeight: 700 }}>{geminiKey ? "✓ Gemini 2.5 Flash" : "⚠ Sem chave"}</div>
+                <div style={{ fontSize: 9, color: "rgba(255,255,255,.4)", fontFamily: "monospace", marginTop: 2 }}>Requer chave Google AI Studio.</div></div>
             )}
           </div>
           <div style={{ flex: 1, minWidth: 220 }}>
@@ -706,24 +876,28 @@ function App() {
                 style={{ flex: 1, padding: "6px 9px", border: "1px solid rgba(201,168,76,.3)", borderRadius: 4, background: "rgba(255,255,255,.07)", color: "white", fontFamily: "monospace", fontSize: 11, outline: "none" }} />
               <button onClick={() => setShowKey(!showKey)} style={{ padding: "6px 8px", background: "rgba(255,255,255,.07)", border: "1px solid rgba(255,255,255,.12)", color: "#ccc", borderRadius: 4, cursor: "pointer", fontSize: 12 }}>{showKey ? "🙈" : "👁"}</button>
             </div>
-            <div style={{ display: "flex", gap: 7, marginTop: 5 }}>
-              <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" style={{ fontSize: 9, color: G, fontFamily: "monospace", padding: "4px 9px", border: `1px solid ${G}`, borderRadius: 3, textDecoration: "none" }}>Criar chave Gemini ↗</a>
-              <div style={{ fontSize: 9, color: "rgba(255,255,255,.35)", fontFamily: "monospace", lineHeight: 1.5, padding: "4px 0" }}>⚠ Se aparecer "Failed to fetch" → use Claude</div>
-            </div>
           </div>
           <button onClick={() => setShowCfg(false)} style={{ padding: "6px 13px", background: "rgba(34,197,94,.2)", border: "1px solid rgba(34,197,94,.4)", color: "#4ade80", borderRadius: 4, cursor: "pointer", fontSize: 10, fontFamily: "monospace", marginTop: 2 }}>✓ Fechar</button>
         </div>
       )}
 
       {/* ══ NAV ══ */}
-      <div style={{ background: CARD, borderBottom: `2px solid ${BORDER}`, display: "flex", alignItems: "stretch", flexShrink: 0 }}>
-        {[{ id: "inicio", ic: "🏠", l: "Início" }, { id: "editor", ic: "✍️", l: "Editor" }, { id: "templates", ic: "📌", l: "Templates" }, { id: "busca", ic: "🔎", l: "Busca" }, { id: "projeto", ic: "📚", l: "Projeto" }].map(t => (
+      <div style={{ background: CARD, borderBottom: `2px solid ${BORDER}`, display: "flex", alignItems: "stretch", flexShrink: 0, overflowX: "auto" }}>
+        {[
+          { id: "inicio", ic: "🏠", l: "Início" },
+          { id: "editor", ic: "✍️", l: "Editor" },
+          { id: "templates", ic: "📌", l: "Templates" },
+          { id: "biblio", ic: "📖", l: "Bibliotecas" },
+          { id: "busca", ic: "🔎", l: "Busca Jur." },
+          { id: "projeto", ic: "📚", l: "Projeto" },
+        ].map(t => (
           <button key={t.id} className="nav-tab" onClick={() => setTab(t.id)}
-            style={{ padding: "8px 16px", border: "none", borderBottom: `3px solid ${tab === t.id ? G : "transparent"}`, background: tab === t.id ? (darkMode?"rgba(201,168,76,.08)":  "#fdfaf4") : CARD, cursor: "pointer", fontSize: 11.5, color: tab === t.id ? (darkMode?G:N) : TEXT2, fontFamily: "Georgia,serif", fontWeight: tab === t.id ? 700 : 400, display: "flex", alignItems: "center", gap: 4, transition: "all .12s", marginBottom: -2 }}>
+            style={{ padding: "8px 14px", border: "none", borderBottom: `3px solid ${tab === t.id ? G : "transparent"}`, background: tab === t.id ? (darkMode?"rgba(201,168,76,.08)":"#fdfaf4") : CARD, cursor: "pointer", fontSize: 11, color: tab === t.id ? (darkMode?G:N) : TEXT2, fontFamily: "Georgia,serif", fontWeight: tab === t.id ? 700 : 400, display: "flex", alignItems: "center", gap: 4, transition: "all .12s", marginBottom: -2, whiteSpace: "nowrap", flexShrink: 0 }}>
             <span>{t.ic}</span>{t.l}
+            {t.id === "biblio" && <span style={{ fontSize: 7, padding: "1px 4px", background: "rgba(201,168,76,.2)", border: `1px solid ${G}40`, color: G, borderRadius: 3, fontFamily: "monospace", marginLeft: 2 }}>NOVO</span>}
           </button>
         ))}
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, padding: "0 14px" }}>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, padding: "0 14px", flexShrink: 0 }}>
           <span style={{ fontSize: 9, padding: "3px 8px", background: motor === "claude" ? "rgba(34,197,94,.1)" : "rgba(96,165,250,.1)", border: `1px solid ${motor === "claude" ? "rgba(34,197,94,.3)" : "rgba(96,165,250,.3)"}`, color: motor === "claude" ? (darkMode?"#4ade80":"#166534") : (darkMode?"#60a5fa":"#1d4ed8"), borderRadius: 12, fontFamily: "monospace", fontWeight: 700 }}>
             {motor === "claude" ? "⚖️ Claude · streaming" : "🔮 Gemini"}
           </span>
@@ -742,25 +916,16 @@ function App() {
               <div style={{ fontSize: 20 }}>⚖️</div>
               <div>
                 <div style={{ fontSize: 12, fontWeight: 700, color: darkMode?"#4ade80":"#166534", marginBottom: 2 }}>Claude Sonnet 4 · Streaming ativo — sem nenhuma chave</div>
-                <div style={{ fontSize: 10, color: darkMode?"#4ade80":"#166534", lineHeight: 1.6 }}>O texto aparece em tempo real enquanto o Claude digita. Máxima qualidade jurídica.</div>
+                <div style={{ fontSize: 10, color: darkMode?"#4ade80":"#166534", lineHeight: 1.6 }}>O texto aparece em tempo real. Fase 3: Bibliotecas Jurídicas integradas com IA.</div>
               </div>
             </div>
           )}
-          {motor === "gemini" && !geminiKey && (
-            <div style={{ background: darkMode?"rgba(239,68,68,.08)":"#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, padding: "10px 16px", marginBottom: 14, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <div style={{ flex: 1 }}><div style={{ fontSize: 12, fontWeight: 700, color: "#991b1b" }}>🔮 Gemini selecionado mas sem chave</div>
-                <div style={{ fontSize: 10, color: "#b91c1c" }}>Cole a chave em ⚙ Config, ou mude para <strong>⚖️ Claude</strong>.</div></div>
-              <button onClick={() => setMotor("claude")} style={{ padding: "6px 12px", background: "#0f1a33", color: "#c9a84c", border: "none", borderRadius: 4, cursor: "pointer", fontSize: 11, fontFamily: "monospace", fontWeight: 700, whiteSpace: "nowrap" }}>Usar Claude →</button>
-            </div>
-          )}
-
-          {/* KPIs */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 16 }}>
             {[
               { l: "Docs gerados", v: totD, u: "nesta sessão" },
               { l: "Palavras escritas", v: totW.toLocaleString("pt-BR"), u: "palavras" },
               { l: "Sessões salvas", v: sessoes.length, u: "histórico" },
-              { l: "Progresso", v: `${pct}%`, u: `${p.capsOk?.length||0}/${totalC} caps` },
+              { l: "Fontes salvas", v: fontesSalvas.length, u: "bibliotecas" },
             ].map((k, i) => (
               <div key={i} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "11px 13px" }}>
                 <div style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", marginBottom: 4, textTransform: "uppercase", letterSpacing: ".07em" }}>{k.l}</div>
@@ -769,8 +934,6 @@ function App() {
               </div>
             ))}
           </div>
-
-          {/* Config rápida */}
           <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "10px 14px", marginBottom: 16, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <span style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".1em", whiteSpace: "nowrap" }}>Config:</span>
             <select style={inp} value={area} onChange={e => setArea(e.target.value)}>{AREAS.map(a => <option key={a}>{a}</option>)}</select>
@@ -782,44 +945,38 @@ function App() {
             </select>
             <input value={p.nome} onChange={e => setProj(pr => ({ ...pr, nome: e.target.value }))} placeholder="Nome do projeto..." style={{ ...inp, flex: 1, minWidth: 140 }} />
           </div>
-
-          {/* Tipos */}
           <div style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".13em", marginBottom: 10 }}>Tipo de documento — selecione e vá ao Editor</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 9, marginBottom: 18 }}>
             {TIPOS_DOC.map(t => (
               <div key={t.id} className="tc"
                 onClick={() => { setTipo(t.id); setTab("editor"); setTimeout(() => taRef.current?.focus(), 100); }}
                 style={{ background: tipo === t.id ? `${t.cor}12` : CARD, border: `2px solid ${tipo === t.id ? t.cor : BORDER}`, borderRadius: 10, padding: "13px 12px", cursor: "pointer", transition: "all .15s", position: "relative", overflow: "hidden" }}>
-                <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 3, background: t.cor, borderRadius: "8px 8px 0 0" }} />
+                <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 3, background: t.cor }} />
                 <div style={{ width: 40, height: 40, borderRadius: 10, background: `${t.cor}15`, border: `1px solid ${t.cor}30`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, marginBottom: 8, marginTop: 4 }}>{t.ic}</div>
                 <div style={{ fontSize: 11.5, fontWeight: 700, color: tipo === t.id ? t.cor : N, marginBottom: 3, lineHeight: 1.3 }}>{t.l}</div>
                 <div style={{ fontSize: 10, color: TEXT2, lineHeight: 1.5 }}>{t.desc}</div>
               </div>
             ))}
           </div>
-
-          {/* Caps pendentes */}
-          {p.capsProx?.length > 0 && (
-            <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "12px 16px" }}>
-              <div style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 9 }}>Capítulos pendentes — clique para gerar</div>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {p.capsProx.map((c, i) => (
-                  <button key={i} disabled={loading}
-                    onClick={() => { setTipo("livro"); send(`Gere o Capítulo ${c.num}: ${c.titulo} do projeto "${p.nome}". Área: ${area}.`); }}
-                    style={{ padding: "6px 13px", background: darkMode?"rgba(201,168,76,.08)":"#fdfaf4", border: `1px solid ${G}`, borderRadius: 20, cursor: loading ? "not-allowed" : "pointer", fontSize: 11, color: N, fontFamily: "monospace", opacity: loading ? .4 : 1, transition: "all .15s" }}>
-                    ▶ Cap.{c.num} — {c.titulo?.slice(0, 32)}{c.titulo?.length > 32 ? "…" : ""}
-                  </button>
-                ))}
+          {/* Atalho para Bibliotecas */}
+          <div style={{ background: `linear-gradient(135deg,${darkMode?"#0a1628":"#fdfaf4"},${darkMode?"#111827":"white"})`, border: `1px solid ${G}40`, borderRadius: 10, padding: "14px 18px", display: "flex", gap: 14, alignItems: "center" }}>
+            <div style={{ fontSize: 28 }}>📖</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: N, marginBottom: 3 }}>Fase 3 — Bibliotecas Jurídicas Integradas</div>
+              <div style={{ fontSize: 10, color: TEXT2, lineHeight: 1.65 }}>
+                CAPES · SciELO · BDTD · STF · STJ · TCU · EUR-Lex · HeinOnline e mais 30+ bases. Mapa de pesquisa com IA, formatação ABNT automática e verificação de fontes.
               </div>
             </div>
-          )}
+            <button onClick={() => setTab("biblio")} style={{ padding: "9px 18px", background: darkMode?"#1a2744":"#0f1a33", color: G, border: `1px solid ${G}`, borderRadius: 6, cursor: "pointer", fontSize: 11, fontFamily: "monospace", fontWeight: 700, whiteSpace: "nowrap" }}>
+              📖 Abrir Bibliotecas →
+            </button>
+          </div>
         </div>
       )}
 
       {/* ══════════════════ EDITOR ══════════════════ */}
       {tab === "editor" && (
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          {/* Chips tipo */}
           <div style={{ background: CARD, borderBottom: `1px solid ${BORDER}`, padding: "5px 14px", display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap", flexShrink: 0 }}>
             <span style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".09em", whiteSpace: "nowrap" }}>Tipo:</span>
             {TIPOS_DOC.map(t => (
@@ -829,24 +986,22 @@ function App() {
               </button>
             ))}
           </div>
-
-          {/* Chat */}
           <div style={{ flex: 1, overflowY: "auto", padding: "14px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
             {msgs.length === 0 && !loading && (
               <div style={{ textAlign: "center", padding: "44px 18px", color: TEXT2 }}>
                 <div style={{ fontSize: 46, marginBottom: 10 }}>✍️</div>
                 <div style={{ fontSize: 14, color: N, fontWeight: 700, marginBottom: 7 }}>Editor jurídico com streaming</div>
-                <div style={{ fontSize: 12, lineHeight: 1.9, maxWidth: 480, margin: "0 auto", color: TEXT2 }}>
+                <div style={{ fontSize: 12, lineHeight: 1.9, maxWidth: 480, margin: "0 auto" }}>
                   <strong>1.</strong> Descreva o problema no campo abaixo (contexto jurídico)<br/>
                   <strong>2.</strong> Escreva o tema e pressione <strong>Enter</strong><br/>
                   <strong>3.</strong> O texto aparecerá em tempo real · exporte em <strong>.docx</strong> ou <strong>.md</strong>
                 </div>
-                <button onClick={() => setTab("templates")} style={{ marginTop: 16, padding: "8px 18px", background: "transparent", border: `1px solid ${G}`, color: G, borderRadius: 6, cursor: "pointer", fontSize: 11, fontFamily: "monospace" }}>
-                  📌 Ver templates prontos →
-                </button>
+                <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 16 }}>
+                  <button onClick={() => setTab("templates")} style={{ padding: "8px 18px", background: "transparent", border: `1px solid ${G}`, color: G, borderRadius: 6, cursor: "pointer", fontSize: 11, fontFamily: "monospace" }}>📌 Ver templates →</button>
+                  <button onClick={() => setTab("biblio")} style={{ padding: "8px 18px", background: "transparent", border: `1px solid ${BORDER}`, color: TEXT2, borderRadius: 6, cursor: "pointer", fontSize: 11, fontFamily: "monospace" }}>📖 Bibliotecas →</button>
+                </div>
               </div>
             )}
-
             {msgs.map((m, i) => (
               <div key={i} style={{ animation: "jup .22s ease" }}>
                 {m.role === "user" ? (
@@ -856,18 +1011,12 @@ function App() {
                 ) : (
                   <div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5, flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 8, padding: "2px 7px", background: m.motor === "gemini" ? "rgba(96,165,250,.1)" : "rgba(201,168,76,.12)", border: `1px solid ${m.motor === "gemini" ? "rgba(96,165,250,.3)" : "rgba(201,168,76,.3)"}`, color: m.motor === "gemini" ? (darkMode?"#60a5fa":"#1d4ed8") : (darkMode?"#c9a84c":"#92400e"), borderRadius: 10, fontFamily: "monospace", fontWeight: 700 }}>
+                      <span style={{ fontSize: 8, padding: "2px 7px", background: "rgba(201,168,76,.12)", border: "1px solid rgba(201,168,76,.3)", color: darkMode?"#c9a84c":"#92400e", borderRadius: 10, fontFamily: "monospace", fontWeight: 700 }}>
                         {m.motor === "gemini" ? "🔮 Gemini" : "⚖️ Claude · streaming"}
                       </span>
                       {!m.text.startsWith("⚠️") && (
-                        <>
-                          <span style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace" }}>
-                            {contarPalavras(m.text).toLocaleString("pt-BR")} palavras
-                          </span>
-                          <span style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace" }}>
-                            · {contarNotas(m.text)} notas
-                          </span>
-                        </>
+                        <><span style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace" }}>{contarPalavras(m.text).toLocaleString("pt-BR")} palavras</span>
+                        <span style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace" }}>· {contarNotas(m.text)} notas</span></>
                       )}
                     </div>
                     <div style={{ padding: "14px 18px", background: CARD, borderLeft: `3px solid ${G}`, borderRadius: 4, fontSize: 13, lineHeight: 1.9, fontFamily: "Georgia,serif", color: N, boxShadow: darkMode?"0 1px 8px rgba(0,0,0,.25)":"0 1px 8px rgba(0,0,0,.07)" }}>
@@ -887,114 +1036,85 @@ function App() {
                 )}
               </div>
             ))}
-
-            {/* Streaming em tempo real */}
             {loading && streamText && (
               <div>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
                   <span style={{ fontSize: 8, padding: "2px 7px", background: "rgba(201,168,76,.12)", border: "1px solid rgba(201,168,76,.3)", color: darkMode?"#c9a84c":"#92400e", borderRadius: 10, fontFamily: "monospace", fontWeight: 700 }}>⚖️ Claude · digitando…</span>
                   <span style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace" }}>{contarPalavras(streamText).toLocaleString("pt-BR")} palavras</span>
                 </div>
-                <div style={{ padding: "14px 18px", background: CARD, borderLeft: `3px solid ${G}`, borderRadius: 4, fontSize: 13, lineHeight: 1.9, fontFamily: "Georgia,serif", color: N, boxShadow: darkMode?"0 1px 8px rgba(0,0,0,.25)":"0 1px 8px rgba(0,0,0,.07)", opacity: .92 }}>
+                <div style={{ padding: "14px 18px", background: CARD, borderLeft: `3px solid ${G}`, borderRadius: 4, fontSize: 13, lineHeight: 1.9, fontFamily: "Georgia,serif", color: N, opacity: .92 }}>
                   <Linhas text={streamText} dark={darkMode} />
                   <span style={{ display: "inline-block", width: 9, height: 16, background: G, verticalAlign: "middle", animation: "jb .9s infinite", marginLeft: 2, borderRadius: 2 }} />
                 </div>
               </div>
             )}
-
             {loading && !streamText && (
-              <div style={{ display: "flex", gap: 9, alignItems: "center", padding: "12px 16px", background: CARD, borderLeft: `3px solid ${G}`, borderRadius: 4, boxShadow: "0 1px 7px rgba(0,0,0,.07)" }}>
-                <div style={{ display: "flex", gap: 4 }}>{[0, .2, .4].map((d, j) => <div key={j} style={{ width: 6, height: 6, borderRadius: "50%", background: G, animation: `jb 1.2s ${d}s infinite` }} />)}</div>
-                <span style={{ fontSize: 10, color: TEXT2, fontFamily: "monospace", flex: 1 }}>{status || (motor === "claude" ? "⚖️ Claude Sonnet 4 gerando..." : "🔮 Gemini gerando...")}</span>
+              <div style={{ display: "flex", gap: 9, alignItems: "center", padding: "12px 16px", background: CARD, borderLeft: `3px solid ${G}`, borderRadius: 4 }}>
+                <div style={{ display: "flex", gap: 4 }}>{[0,.2,.4].map((d,j)=><div key={j} style={{ width: 6, height: 6, borderRadius: "50%", background: G, animation: `jb 1.2s ${d}s infinite` }}/>)}</div>
+                <span style={{ fontSize: 10, color: TEXT2, fontFamily: "monospace", flex: 1 }}>{status || "⚖️ Claude Sonnet 4 gerando..."}</span>
                 <button onClick={() => { setLoading(false); setStatus(""); setStreamText(""); }} style={{ padding: "3px 9px", background: "#991b1b", border: "none", borderRadius: 3, color: "white", fontSize: 9, fontFamily: "monospace", cursor: "pointer" }}>✕ Cancelar</button>
               </div>
             )}
-
             <div ref={botRef} />
           </div>
-
-          {/* INPUT AREA */}
           <div style={{ background: CARD, borderTop: `1px solid ${BORDER}`, padding: "11px 15px", flexShrink: 0 }}>
-            {/* Problema */}
             <div style={{ marginBottom: 8 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                 <span style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".1em" }}>📌 Descrição do problema / contexto jurídico</span>
                 <span style={{ fontSize: 8, color: darkMode?"#4a5568":"#bbb", fontFamily: "monospace" }}>(opcional mas recomendado)</span>
               </div>
               <textarea value={problema} onChange={e => setProblema(e.target.value)} rows={3}
-                placeholder="Descreva o problema jurídico, caso concreto, controvérsia ou questões a responder. Ex: 'Empresa pública sofreu impugnação de licitação por preço inexequível — necessário parecer sobre art. 59 da Lei 14.133/2021, jurisprudência TCU e STJ...'"
+                placeholder="Descreva o problema jurídico, caso concreto, controvérsia ou questões a responder. Pode colar fontes das Bibliotecas aqui."
                 style={{ width: "100%", padding: "9px 12px", border: `1px solid ${G}40`, fontFamily: "Georgia,serif", fontSize: 12, resize: "none", outline: "none", borderRadius: 6, lineHeight: 1.65, background: darkMode?"rgba(201,168,76,.04)":"#fdfaf4", maxHeight: 140, transition: "all .2s", color: N }}
                 onFocus={e => { e.target.style.borderColor = G; e.target.style.background = darkMode?"rgba(201,168,76,.07)":"white"; }}
                 onBlur={e => { e.target.style.borderColor = `${G}40`; e.target.style.background = darkMode?"rgba(201,168,76,.04)":"#fdfaf4"; }}
               />
             </div>
-
-            {/* Tema + enviar */}
             <div style={{ display: "flex", gap: 7, alignItems: "flex-end" }}>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 4 }}>
-                  Tema / Título ({TIPOS_DOC.find(t => t.id === tipo)?.l})
-                </div>
+                <div style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 4 }}>Tema / Título ({TIPOS_DOC.find(t=>t.id===tipo)?.l})</div>
                 <textarea ref={taRef} rows={2} value={tema} onChange={e => setTema(e.target.value)}
                   onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-                  placeholder={`Ex: ${tipo === "livro" ? "Licitação inexigível — Lei 14.133/2021" : tipo === "parecer" ? "Validade de contrato sem licitação" : tipo === "peticao" ? "Mandado de segurança contra ato coator" : "Tema do documento..."}`}
+                  placeholder="Ex: Licitação inexigível — Lei 14.133/2021"
                   style={{ width: "100%", padding: "8px 11px", border: `1px solid ${BORDER}`, fontFamily: "Georgia,serif", fontSize: 13, resize: "none", outline: "none", borderRadius: 5, lineHeight: 1.6, background: CR, maxHeight: 100, transition: "all .2s", color: N }}
                   onFocus={e => { e.target.style.borderColor = G; e.target.style.background = CARD; }}
                   onBlur={e => { e.target.style.borderColor = BORDER; e.target.style.background = CR; }}
                 />
               </div>
               <button onClick={() => send()} disabled={loading || !tema.trim()}
-                style={{ width: 44, height: 44, background: (loading || !tema.trim()) ? (darkMode?"#1e2d45":"#d4cfc6") : (darkMode?"#1a2744":"#0f1a33"), border: "none", borderRadius: 5, cursor: (loading || !tema.trim()) ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all .2s" }}
+                style={{ width: 44, height: 44, background: (loading || !tema.trim()) ? (darkMode?"#1e2d45":"#d4cfc6") : (darkMode?"#1a2744":"#0f1a33"), border: "none", borderRadius: 5, cursor: (loading||!tema.trim())?"not-allowed":"pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all .2s" }}
                 onMouseEnter={e => { if (!loading && tema.trim()) e.currentTarget.style.background = "#8b1a1a"; }}
                 onMouseLeave={e => { if (!loading && tema.trim()) e.currentTarget.style.background = darkMode?"#1a2744":"#0f1a33"; }}>
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="white"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
               </button>
             </div>
-
             <div style={{ display: "flex", gap: 5, marginTop: 7, flexWrap: "wrap", alignItems: "center" }}>
               {["Desenvolver texto completo","Buscar jurisprudência","Avaliação técnica","Continuar texto","Revisar ABNT"].map((a, i) => (
-                <button key={i} className="ch" onClick={() => setTema(t => {
-                  const b = t || "[insira o tema]";
-                  if (a === "Continuar texto") return `Continue de onde parou:\n\n${b}`;
-                  return `${a} sobre: ${b}`;
-                })} style={{ fontSize: 9.5, fontFamily: "monospace", padding: "3px 8px", border: `1px solid ${BORDER}`, background: "transparent", color: TEXT2, cursor: "pointer", borderRadius: 3 }}>
-                  {a}
-                </button>
+                <button key={i} className="ch" onClick={() => setTema(t => { const b = t || "[insira o tema]"; if (a === "Continuar texto") return `Continue de onde parou:\n\n${b}`; return `${a} sobre: ${b}`; })} style={{ fontSize: 9.5, fontFamily: "monospace", padding: "3px 8px", border: `1px solid ${BORDER}`, background: "transparent", color: TEXT2, cursor: "pointer", borderRadius: 3 }}>{a}</button>
               ))}
               {msgs.length > 0 && (
                 <>
                   <button onClick={salvarSessao} style={{ fontSize: 9.5, fontFamily: "monospace", padding: "3px 8px", border: "1px solid rgba(34,197,94,.4)", background: "transparent", color: darkMode?"#4ade80":"#166534", cursor: "pointer", borderRadius: 3 }}>💾 Salvar sessão</button>
-                  <button onClick={() => { novaSessao(); }} style={{ fontSize: 9.5, fontFamily: "monospace", padding: "3px 8px", border: "1px solid #fca5a5", background: "transparent", color: "#b91c1c", cursor: "pointer", borderRadius: 3, marginLeft: "auto" }}>🗑 Limpar</button>
+                  <button onClick={novaSessao} style={{ fontSize: 9.5, fontFamily: "monospace", padding: "3px 8px", border: "1px solid #fca5a5", background: "transparent", color: "#b91c1c", cursor: "pointer", borderRadius: 3, marginLeft: "auto" }}>🗑 Limpar</button>
                 </>
               )}
-              {problema && (
-                <button onClick={() => setProblema("")} style={{ fontSize: 9, fontFamily: "monospace", padding: "3px 8px", border: "1px solid #fca5a5", background: "transparent", color: "#b91c1c", cursor: "pointer", borderRadius: 3 }}>✕ limpar problema</button>
-              )}
+              {problema && <button onClick={() => setProblema("")} style={{ fontSize: 9, fontFamily: "monospace", padding: "3px 8px", border: "1px solid #fca5a5", background: "transparent", color: "#b91c1c", cursor: "pointer", borderRadius: 3 }}>✕ limpar contexto</button>}
             </div>
           </div>
         </div>
       )}
 
-      {/* ══════════════════ TEMPLATES — FASE 2 ══════════════════ */}
+      {/* ══════════════════ TEMPLATES ══════════════════ */}
       {tab === "templates" && (
         <div style={{ flex: 1, overflowY: "auto", padding: "18px 22px" }}>
-          <div style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".13em", marginBottom: 14 }}>
-            📌 Biblioteca de templates — clique para carregar no editor
-          </div>
+          <div style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".13em", marginBottom: 14 }}>📌 Biblioteca de templates — clique para carregar no editor</div>
           {TEMPLATES.map(grupo => (
             <div key={grupo.g} style={{ marginBottom: 20 }}>
               <div style={{ fontSize: 10, fontWeight: 700, color: G, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 8, borderBottom: `1px solid ${BORDER}`, paddingBottom: 5 }}>{grupo.g}</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8 }}>
                 {grupo.items.map((tpl, i) => (
-                  <div key={i} className="tpl-item"
-                    style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "12px 14px", transition: "all .15s" }}
-                    onClick={() => {
-                      setTipo(tpl.tipo);
-                      setTema(tpl.tema);
-                      setTab("editor");
-                      setTimeout(() => taRef.current?.focus(), 150);
-                      setToast(`Template carregado: ${tpl.l}`);
-                    }}>
+                  <div key={i} className="tpl-item" style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "12px 14px", transition: "all .15s" }}
+                    onClick={() => { setTipo(tpl.tipo); setTema(tpl.tema); setTab("editor"); setTimeout(() => taRef.current?.focus(), 150); setToast(`Template carregado: ${tpl.l}`); }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
                       <span style={{ fontSize: 20 }}>{tpl.ic}</span>
                       <div>
@@ -1009,24 +1129,234 @@ function App() {
               </div>
             </div>
           ))}
-          <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "14px 18px", marginTop: 8 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: N, marginBottom: 6 }}>✏️ Ou crie seu próprio template</div>
-            <div style={{ fontSize: 11, color: TEXT2, lineHeight: 1.7 }}>
-              Vá ao <strong>Editor</strong>, escolha o tipo de documento, preencha o problema e o tema — o sistema criará um prompt estruturado automaticamente.
+        </div>
+      )}
+
+      {/* ══════════════════ FASE 3: BIBLIOTECAS ══════════════════ */}
+      {tab === "biblio" && (
+        <div style={{ flex: 1, overflowY: "auto", padding: "18px 22px" }}>
+          {/* Header Bibliotecas */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".13em", marginBottom: 4 }}>Fase 3 — Bibliotecas Jurídicas Integradas</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: N }}>📖 Bases de Dados, Repositórios & IA</div>
+              <div style={{ fontSize: 10, color: TEXT2, marginTop: 3 }}>CAPES · SciELO · BDTD · STF · STJ · HeinOnline · EUR-Lex e mais 30+ bases</div>
             </div>
-            <button onClick={() => setTab("editor")} style={{ marginTop: 10, padding: "7px 16px", background: N, color: G, border: `1px solid ${G}`, borderRadius: 4, cursor: "pointer", fontSize: 11, fontFamily: "monospace", fontWeight: 700 }}>
-              ✍️ Abrir Editor →
-            </button>
+            <div style={{ display: "flex", gap: 6 }}>
+              {fontesSalvas.length > 0 && (
+                <div style={{ fontSize: 9, padding: "4px 9px", background: `rgba(201,168,76,.12)`, border: `1px solid ${G}40`, color: G, borderRadius: 20, fontFamily: "monospace", display: "flex", alignItems: "center", gap: 4 }}>
+                  📌 {fontesSalvas.length} {fontesSalvas.length === 1 ? "fonte salva" : "fontes salvas"}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Assistente IA para Pesquisa ── */}
+          <div style={{ background: CARD, border: `2px solid ${G}30`, borderRadius: 10, padding: "14px 16px", marginBottom: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+              <div style={{ width: 32, height: 32, borderRadius: "50%", background: darkMode?"#1a2744":"#0f1a33", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>⚖️</div>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: N }}>Assistente de Pesquisa Jurídica — Claude Sonnet 4</div>
+                <div style={{ fontSize: 9, color: TEXT2, fontFamily: "monospace" }}>Streaming · sem chave · integridade acadêmica garantida</div>
+              </div>
+              <div style={{ marginLeft: "auto", fontSize: 8, padding: "3px 8px", background: "rgba(34,197,94,.1)", border: "1px solid rgba(34,197,94,.3)", color: darkMode?"#4ade80":"#166534", borderRadius: 10, fontFamily: "monospace", fontWeight: 700 }}>⚖️ CLAUDE ATIVO</div>
+            </div>
+
+            {/* Seletor de modo */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6, marginBottom: 12 }}>
+              {modosBiblio.map(m => (
+                <button key={m.id} className="bib-modo" onClick={() => setBiblioModo(m.id)}
+                  style={{ padding: "8px 10px", border: `1px solid ${biblioModo===m.id ? G : BORDER}`, borderRadius: 6, background: biblioModo===m.id ? (darkMode?"rgba(201,168,76,.12)":"#fdfaf4") : "transparent", cursor: "pointer", textAlign: "left", transition: "all .12s" }}>
+                  <div style={{ fontSize: 16, marginBottom: 3 }}>{m.ic}</div>
+                  <div style={{ fontSize: 10, fontWeight: biblioModo===m.id ? 700 : 400, color: biblioModo===m.id ? (darkMode?G:"#0f1a33") : N, lineHeight: 1.2 }}>{m.l}</div>
+                  <div style={{ fontSize: 9, color: TEXT2, marginTop: 2, lineHeight: 1.4 }}>{m.desc}</div>
+                </button>
+              ))}
+            </div>
+
+            {/* Campo de entrada dependendo do modo */}
+            {biblioModo === "abnt" ? (
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 9, color: TEXT2, fontFamily: "monospace", marginBottom: 5 }}>
+                  Cole a referência bruta (qualquer formato) — o Claude formata em ABNT NBR 6023:2018:
+                </div>
+                <textarea value={biblioAbntInput} onChange={e => setBiblioAbntInput(e.target.value)} rows={4}
+                  placeholder={"Cole a referência como você encontrou, ex:\nDi Pietro, Maria Sylvia Zanella. Direito Administrativo. 36 edição. São Paulo: Atlas, 2023.\n\nOu:\nSTJ. REsp 1.234.567/SP. Rel. Min. Nome. Julgado em 01/01/2024.\n\nOu até: 'o livro do Marinoni sobre tutela jurisdicional, de 2022'"}
+                  style={{ width: "100%", padding: "10px 12px", border: `1px solid ${G}40`, fontFamily: "Georgia,serif", fontSize: 12, resize: "vertical", outline: "none", borderRadius: 6, lineHeight: 1.7, background: darkMode?"rgba(201,168,76,.04)":"#fdfaf4", color: N, minHeight: 90 }}
+                  onFocus={e => e.target.style.borderColor = G} onBlur={e => e.target.style.borderColor = `${G}40`}
+                />
+              </div>
+            ) : (
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 9, color: TEXT2, fontFamily: "monospace", marginBottom: 5 }}>
+                  {biblioModo==="mapa" && "Descreva o tema jurídico para gerar o mapa de pesquisa completo:"}
+                  {biblioModo==="verificar" && "Cole a citação ou referência que deseja verificar:"}
+                  {biblioModo==="sintetizar" && "Descreva o tema para gerar síntese bibliográfica e estado da arte:"}
+                </div>
+                <div style={{ display: "flex", gap: 7 }}>
+                  <input value={biblioTermo} onChange={e => setBiblioTermo(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") pesquisarBiblio(); }}
+                    placeholder={
+                      biblioModo==="mapa" ? "Ex: responsabilidade civil do Estado, improbidade administrativa, licitação..." :
+                      biblioModo==="verificar" ? "Ex: MELLO, Celso Antônio Bandeira de. Curso de Direito Administrativo. 34. ed..." :
+                      "Ex: controle de constitucionalidade no Brasil pós-2015"
+                    }
+                    style={{ flex: 1, padding: "9px 12px", border: `1px solid ${BORDER}`, fontFamily: "Georgia,serif", fontSize: 12, borderRadius: 5, outline: "none", background: CR, color: N }}
+                    onFocus={e => e.target.style.borderColor = G} onBlur={e => e.target.style.borderColor = BORDER}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button onClick={pesquisarBiblio}
+                disabled={biblioLoading || (biblioModo==="abnt" ? !biblioAbntInput.trim() : !biblioTermo.trim())}
+                style={{ padding: "9px 20px", background: (biblioLoading||!(biblioModo==="abnt"?biblioAbntInput:biblioTermo).trim()) ? (darkMode?"#1e2d45":"#d4cfc6") : (darkMode?"#1a2744":"#0f1a33"), color: (biblioLoading||!(biblioModo==="abnt"?biblioAbntInput:biblioTermo).trim()) ? TEXT2 : G, border: `1px solid ${G}`, borderRadius: 5, cursor: (biblioLoading||!(biblioModo==="abnt"?biblioAbntInput:biblioTermo).trim()) ? "not-allowed" : "pointer", fontSize: 11, fontFamily: "monospace", fontWeight: 700, transition: "all .2s" }}>
+                {biblioLoading ? "⏳ Gerando..." : `⚖️ ${modosBiblio.find(m=>m.id===biblioModo)?.l}`}
+              </button>
+              {(biblioResult || biblioStream) && (
+                <>
+                  <button onClick={() => hCopy(biblioResult || biblioStream, "bib")} style={bOut(cpFb["bib"]?"#22c55e":BORDER, cpFb["bib"]?"#166534":TEXT2)}>{cpFb["bib"]?"✓ Copiado!":"📋 Copiar"}</button>
+                  <button onClick={() => enviarParaEditor(biblioResult || biblioStream)} style={{ padding: "5px 12px", background: darkMode?"#1a2744":"#0f1a33", color: "white", border: "none", borderRadius: 4, fontSize: 11, fontFamily: "monospace", cursor: "pointer" }}>✍️ Usar no Editor →</button>
+                  <button onClick={() => salvarFonte(biblioResult || biblioStream)} style={{ padding: "5px 12px", background: "transparent", border: `1px solid ${G}`, color: G, borderRadius: 4, fontSize: 11, fontFamily: "monospace", cursor: "pointer" }}>📌 Salvar</button>
+                  <button onClick={() => { setBiblioResult(""); setBiblioStream(""); }} style={{ padding: "5px 8px", background: "transparent", border: `1px solid ${BORDER}`, color: TEXT2, borderRadius: 4, fontSize: 11, cursor: "pointer", fontFamily: "monospace" }}>✕</button>
+                </>
+              )}
+            </div>
+
+            {/* Resultado IA */}
+            {(biblioStream || biblioResult) && (
+              <div style={{ marginTop: 14, padding: "14px 16px", background: darkMode?"#0a1628":"#fdfaf4", borderLeft: `3px solid ${G}`, borderRadius: "0 6px 6px 0", fontSize: 12, lineHeight: 1.9, fontFamily: "Georgia,serif", color: N, maxHeight: 400, overflowY: "auto" }}>
+                <Linhas text={biblioStream || biblioResult} dark={darkMode} />
+                {biblioLoading && biblioStream && (
+                  <span style={{ display: "inline-block", width: 8, height: 14, background: G, verticalAlign: "middle", animation: "jb .9s infinite", marginLeft: 2, borderRadius: 2 }} />
+                )}
+              </div>
+            )}
+            <div ref={biblioRef} />
+          </div>
+
+          {/* ── Busca Unificada nas Bases ── */}
+          <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "14px 16px", marginBottom: 20 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: N, marginBottom: 10, display: "flex", alignItems: "center", gap: 7 }}>
+              🔎 <span>Busca Direta nas Bases — abre em nova aba</span>
+              <span style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", fontWeight: 400 }}>Digite e clique no botão da base desejada</span>
+            </div>
+            <div style={{ display: "flex", gap: 7, marginBottom: 12 }}>
+              <input value={biblioSearchTerm} onChange={e => setBiblioSearchTerm(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter" && biblioSearchTerm.trim()) { window.open(`https://scholar.google.com.br/scholar?q=${encodeURIComponent(biblioSearchTerm)}`, "_blank"); } }}
+                placeholder="Termo de busca — Ex: licitação pública dispensa requisitos"
+                style={{ flex: 1, padding: "8px 12px", border: `1px solid ${BORDER}`, fontFamily: "Georgia,serif", fontSize: 12, borderRadius: 5, outline: "none", background: CR, color: N }}
+                onFocus={e => e.target.style.borderColor = G} onBlur={e => e.target.style.borderColor = BORDER}
+              />
+              <button onClick={() => setBiblioSearchTerm("")} disabled={!biblioSearchTerm} style={{ padding: "8px 11px", border: `1px solid ${BORDER}`, background: "transparent", color: TEXT2, borderRadius: 4, cursor: biblioSearchTerm ? "pointer" : "not-allowed", fontSize: 11, opacity: biblioSearchTerm ? 1 : .4 }}>✕</button>
+            </div>
+            {!biblioSearchTerm && <div style={{ fontSize: 9, color: TEXT2, fontFamily: "monospace", marginBottom: 8 }}>⬆ Digite um termo acima para ativar os botões de busca direta nas bases</div>}
+
+            {/* Filtro de categoria */}
+            <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 10 }}>
+              <span style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".08em", paddingTop: 4 }}>Filtrar:</span>
+              {["todos", ...BIBLIOTECAS.map(b=>b.cat)].map(cat => (
+                <button key={cat} onClick={() => setBiblioFiltro(cat)}
+                  style={{ padding: "3px 9px", border: `1px solid ${biblioFiltro===cat ? G : BORDER}`, borderRadius: 12, background: biblioFiltro===cat ? (darkMode?"rgba(201,168,76,.12)":"#fdfaf4") : "transparent", color: biblioFiltro===cat ? (darkMode?G:"#0f1a33") : TEXT2, cursor: "pointer", fontSize: 9, fontFamily: "monospace", fontWeight: biblioFiltro===cat ? 700 : 400, transition: "all .12s", whiteSpace: "nowrap" }}>
+                  {cat === "todos" ? "Todas" : cat.split(" & ")[0].split(" · ")[0].split(" &")[0].slice(0,20)}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* ── Grid de Bases de Dados ── */}
+          {BIBLIOTECAS.filter(grp => biblioFiltro === "todos" || biblioFiltro === grp.cat).map(grp => (
+            <div key={grp.cat} style={{ marginBottom: 22 }}>
+              {/* Cabeçalho do grupo */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, paddingBottom: 8, borderBottom: `1px solid ${BORDER}` }}>
+                <div style={{ width: 32, height: 32, borderRadius: 8, background: `${grp.cor}15`, border: `1px solid ${grp.cor}30`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>{grp.icCat}</div>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: grp.cor }}>{grp.cat}</div>
+                  <div style={{ fontSize: 9, color: TEXT2, fontFamily: "monospace" }}>{grp.desc}</div>
+                </div>
+                <div style={{ marginLeft: "auto", fontSize: 9, color: TEXT2, fontFamily: "monospace" }}>{grp.items.length} bases</div>
+              </div>
+
+              {/* Cards das bases */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>
+                {grp.items.map((item, i) => (
+                  <div key={i} className="bib-card"
+                    style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "11px 13px", transition: "all .15s", position: "relative", overflow: "hidden" }}>
+                    {/* Barra de cor no topo */}
+                    <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 2, background: grp.cor }} />
+
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 8, marginTop: 4 }}>
+                      <span style={{ fontSize: 20, flexShrink: 0 }}>{item.ic}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: N, lineHeight: 1.3, marginBottom: 2 }}>{item.l}</div>
+                        <span style={{ fontSize: 8, padding: "1px 5px", background: `${grp.cor}12`, border: `1px solid ${grp.cor}30`, color: grp.cor, borderRadius: 3, fontFamily: "monospace" }}>{item.tag}</span>
+                      </div>
+                    </div>
+
+                    <div style={{ fontSize: 10, color: TEXT2, lineHeight: 1.6, marginBottom: 10 }}>{item.desc}</div>
+
+                    <div style={{ display: "flex", gap: 5 }}>
+                      <button className="abrir-btn"
+                        onClick={() => window.open(item.url, "_blank")}
+                        style={{ flex: 1, padding: "5px 8px", border: `1px solid ${BORDER}`, background: "transparent", color: N, borderRadius: 4, cursor: "pointer", fontSize: 9, fontFamily: "monospace", fontWeight: 700, transition: "all .15s" }}>
+                        🌐 Abrir
+                      </button>
+                      <button className="buscar-btn"
+                        onClick={() => {
+                          const termo = biblioSearchTerm.trim();
+                          if (!termo) { setToast("Digite um termo de busca no campo acima primeiro"); return; }
+                          window.open(item.busca + encodeURIComponent(termo), "_blank");
+                        }}
+                        style={{ flex: 1, padding: "5px 8px", border: `1px solid ${grp.cor}50`, background: `${grp.cor}08`, color: grp.cor, borderRadius: 4, cursor: "pointer", fontSize: 9, fontFamily: "monospace", fontWeight: 700, transition: "all .15s", opacity: biblioSearchTerm ? 1 : .5 }}>
+                        🔍 Buscar
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+
+          {/* ── Fontes Salvas ── */}
+          {fontesSalvas.length > 0 && (
+            <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: "14px 16px", marginTop: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: N }}>📌 Fontes Salvas ({fontesSalvas.length})</div>
+                <button onClick={() => { if(window.confirm("Limpar todas as fontes salvas?")) setFontesSalvas([]); }} style={{ fontSize: 9, padding: "3px 8px", border: "1px solid #fca5a5", background: "transparent", color: "#b91c1c", borderRadius: 3, cursor: "pointer", fontFamily: "monospace" }}>🗑 Limpar tudo</button>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {fontesSalvas.map((f, i) => (
+                  <div key={f.id} className="fonte-row" style={{ padding: "8px 10px", borderRadius: 5, border: `1px solid ${BORDER}`, transition: "background .12s" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                      <div style={{ fontSize: 11, color: N, lineHeight: 1.6, flex: 1 }}>{f.texto.slice(0, 200)}{f.texto.length > 200 ? "…" : ""}</div>
+                      <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                        <button onClick={() => hCopy(f.texto, `f${i}`)} style={{ padding: "2px 7px", border: `1px solid ${BORDER}`, background: "transparent", color: TEXT2, borderRadius: 3, cursor: "pointer", fontSize: 9, fontFamily: "monospace" }}>{cpFb[`f${i}`]?"✓":"📋"}</button>
+                        <button onClick={() => enviarParaEditor(f.texto)} style={{ padding: "2px 7px", border: "none", background: darkMode?"#1a2744":"#0f1a33", color: "white", borderRadius: 3, cursor: "pointer", fontSize: 9, fontFamily: "monospace" }}>Editor</button>
+                        <button onClick={() => setFontesSalvas(fs => fs.filter(x => x.id !== f.id))} style={{ padding: "2px 6px", border: "none", background: "transparent", color: "#b91c1c", cursor: "pointer", fontSize: 11 }}>✕</button>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", marginTop: 4 }}>{f.area} · {new Date(f.ts).toLocaleString("pt-BR")}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Dica final */}
+          <div style={{ background: darkMode?"rgba(201,168,76,.04)":"rgba(201,168,76,.06)", border: `1px solid ${G}25`, borderRadius: 8, padding: "12px 16px", marginTop: 16, display: "flex", gap: 10, alignItems: "flex-start" }}>
+            <span style={{ fontSize: 18, flexShrink: 0 }}>💡</span>
+            <div style={{ fontSize: 11, color: TEXT2, lineHeight: 1.7 }}>
+              <strong style={{ color: N }}>Fluxo recomendado:</strong> Use o <strong>Mapa de Pesquisa</strong> para descobrir os melhores descritores e bases → busque nas bases com o campo acima → cole os resultados como <strong>Contexto</strong> no Editor → gere o texto jurídico com fontes reais integradas.
+            </div>
           </div>
         </div>
       )}
 
-      {/* ══════════════════ BUSCA ══════════════════ */}
+      {/* ══════════════════ BUSCA JURISPRUDENCIAL ══════════════════ */}
       {tab === "busca" && (
         <div style={{ flex: 1, overflowY: "auto", padding: "18px 22px" }}>
-          <div style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".13em", marginBottom: 12 }}>
-            Busca jurídica — STF · STJ · TRFs · TCU · BDjur · LexML · Legislação
-          </div>
+          <div style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".13em", marginBottom: 12 }}>Busca jurídica — STF · STJ · TRFs · TCU · BDjur · LexML · Legislação</div>
           <div style={{ display: "flex", gap: 7, marginBottom: 12 }}>
             <input value={bTermo} onChange={e => setBTermo(e.target.value)} onKeyDown={e => { if (e.key === "Enter") buscar(); }}
               placeholder="Ex: responsabilidade civil Estado, licitação inexigível, improbidade administrativa..."
@@ -1037,9 +1367,8 @@ function App() {
               {bLoad ? "⏳..." : `🔎 ${motor === "claude" ? "Claude" : "Gemini"}`}
             </button>
           </div>
-
           <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "11px 15px", marginBottom: 14 }}>
-            <div style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".09em", marginBottom: 8 }}>Abrir diretamente no tribunal (nova aba):</div>
+            <div style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".09em", marginBottom: 8 }}>Abrir diretamente no tribunal:</div>
             <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
               {TRIBUNAIS.map(t => (
                 <button key={t.l} className="tb" onClick={() => bTermo && window.open(t.url + encodeURIComponent(bTermo), "_blank")} disabled={!bTermo}
@@ -1048,23 +1377,15 @@ function App() {
                 </button>
               ))}
             </div>
-            {!bTermo && <div style={{ fontSize: 9, color: TEXT2, marginTop: 6, fontFamily: "monospace" }}>Digite um termo acima para habilitar os botões</div>}
           </div>
-
           {bResult && (
             <div style={{ background: CARD, border: `1px solid ${G}50`, borderLeft: `3px solid ${G}`, borderRadius: 4, padding: "14px 18px" }}>
-              <div style={{ fontSize: 8, color: G, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 10 }}>Jurisprudência compilada — {motor === "claude" ? "Claude Sonnet 4 · streaming" : "Gemini"}</div>
+              <div style={{ fontSize: 8, color: G, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 10 }}>Jurisprudência compilada — Claude Sonnet 4 · streaming</div>
               <div style={{ fontSize: 13, lineHeight: 1.9, fontFamily: "Georgia,serif" }}><Linhas text={bResult} dark={darkMode} /></div>
               <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
-                <button onClick={() => hCopy(bResult, "b")} style={bOut(cpFb["b"] ? "#22c55e" : BORDER, cpFb["b"] ? "#166534" : TEXT2)}>{cpFb["b"] ? "✓ Copiado!" : "📋 Copiar"}</button>
-                <button onClick={() => exportarMarkdown(bResult, bTermo)} style={bOut(G, G)}>⬇ .md</button>
-                <button onClick={() => {
-                  setTema(`Desenvolva texto jurídico completo usando estas jurisprudências:\n\nTema: ${bTermo}`);
-                  setProblema(bResult.slice(0, 500));
-                  setTab("editor");
-                }} style={{ padding: "5px 13px", background: darkMode?"#1a2744":"#0f1a33", color: "white", border: "none", borderRadius: 4, fontSize: 11, fontFamily: "monospace", cursor: "pointer", fontWeight: 700 }}>
-                  ✍️ Usar no Editor →
-                </button>
+                <button onClick={() => hCopy(bResult, "b")} style={bOut(cpFb["b"]?"#22c55e":BORDER, cpFb["b"]?"#166534":TEXT2)}>{cpFb["b"]?"✓ Copiado!":"📋 Copiar"}</button>
+                <button onClick={() => exportarMarkdown(bResult, bTermo)} style={bOut(G,G)}>⬇ .md</button>
+                <button onClick={() => { setTema(`Desenvolva texto jurídico completo usando estas jurisprudências:\n\nTema: ${bTermo}`); setProblema(bResult.slice(0, 500)); setTab("editor"); }} style={{ padding: "5px 13px", background: darkMode?"#1a2744":"#0f1a33", color: "white", border: "none", borderRadius: 4, fontSize: 11, fontFamily: "monospace", cursor: "pointer", fontWeight: 700 }}>✍️ Usar no Editor →</button>
               </div>
             </div>
           )}
@@ -1075,9 +1396,9 @@ function App() {
       {tab === "projeto" && (
         <div style={{ flex: 1, overflowY: "auto", padding: "18px 22px" }}>
           <div style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: ".13em", marginBottom: 14 }}>Configuração do projeto editorial</div>
-
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-            {[{ l: "📖 Nome do livro / tratado", k: "nome", ph: "Ex: Direito Administrativo Contemporâneo — 3ª Edição" }, { l: "🏛 Área do Direito", k: "area", ph: "Ex: Direito Administrativo, Constitucional..." }].map(f => (
+            {[{ l: "📖 Nome do livro / tratado", k: "nome", ph: "Ex: Direito Administrativo Contemporâneo — 3ª Edição" },
+              { l: "🏛 Área do Direito", k: "area", ph: "Ex: Direito Administrativo, Constitucional..." }].map(f => (
               <div key={f.k}>
                 <label style={{ fontSize: 10, fontWeight: 700, color: N, display: "block", marginBottom: 4 }}>{f.l}</label>
                 <input value={p[f.k] || ""} onChange={e => setProj(pr => ({ ...pr, [f.k]: e.target.value }))} placeholder={f.ph}
@@ -1086,7 +1407,6 @@ function App() {
               </div>
             ))}
           </div>
-
           <div style={{ marginBottom: 12 }}>
             <label style={{ fontSize: 10, fontWeight: 700, color: N, display: "block", marginBottom: 4 }}>✍️ Autores / referência de estilo</label>
             <input value={p.autores || ""} onChange={e => setProj(pr => ({ ...pr, autores: e.target.value }))}
@@ -1094,49 +1414,38 @@ function App() {
               style={{ width: "100%", padding: "7px 10px", border: `1px solid ${BORDER}`, borderRadius: 4, fontFamily: "Georgia,serif", fontSize: 12, outline: "none", background: CARD, color: N }}
               onFocus={e => e.target.style.borderColor = G} onBlur={e => e.target.style.borderColor = BORDER} />
           </div>
-
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <div>
               <label style={{ fontSize: 10, fontWeight: 700, color: N, display: "block", marginBottom: 4 }}>✅ Capítulos concluídos (um por linha)</label>
-              <textarea value={(p.capsOk || []).join("\n")} onChange={e => setProj(pr => ({ ...pr, capsOk: e.target.value.split("\n").map(l => l.trim()).filter(Boolean) }))}
+              <textarea value={(p.capsOk||[]).join("\n")} onChange={e => setProj(pr => ({ ...pr, capsOk: e.target.value.split("\n").map(l=>l.trim()).filter(Boolean) }))}
                 placeholder={"Cap. 1 — Fundamentos\nCap. 2 — Princípios Constitucionais"}
                 style={{ width: "100%", minHeight: 120, padding: "7px 10px", border: `1px solid ${BORDER}`, borderRadius: 4, fontFamily: "Georgia,serif", fontSize: 11, outline: "none", resize: "vertical", lineHeight: 1.7, background: CARD, color: N }} />
             </div>
             <div>
               <label style={{ fontSize: 10, fontWeight: 700, color: N, display: "block", marginBottom: 4 }}>⏳ Próximos capítulos (número|título)</label>
-              <textarea value={(p.capsProx || []).map(c => `${c.num}|${c.titulo}`).join("\n")}
-                onChange={e => setProj(pr => ({ ...pr, capsProx: e.target.value.split("\n").map(l => l.trim()).filter(Boolean).map(l => { const [n, ...r] = l.split("|"); return { num: n.trim(), titulo: r.join("|").trim() }; }).filter(c => c.num && c.titulo) }))}
+              <textarea value={(p.capsProx||[]).map(c=>`${c.num}|${c.titulo}`).join("\n")}
+                onChange={e => setProj(pr => ({ ...pr, capsProx: e.target.value.split("\n").map(l=>l.trim()).filter(Boolean).map(l => { const [n,...r]=l.split("|"); return { num: n.trim(), titulo: r.join("|").trim() }; }).filter(c=>c.num&&c.titulo) }))}
                 placeholder={"3|Licitação — Lei 14.133/2021\n4|Contratos Administrativos"}
                 style={{ width: "100%", minHeight: 120, padding: "7px 10px", border: `1px solid ${BORDER}`, borderRadius: 4, fontFamily: "Georgia,serif", fontSize: 11, outline: "none", resize: "vertical", lineHeight: 1.7, background: CARD, color: N }} />
-              <div style={{ fontSize: 8, color: TEXT2, fontFamily: "monospace", marginTop: 3 }}>número|título → botões de disparo em Início</div>
             </div>
           </div>
-
           {totalC > 0 && (
             <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, padding: "12px 16px", marginTop: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 7 }}>
                 <span style={{ fontSize: 11, fontFamily: "monospace", color: N }}>Progresso do tratado</span>
-                <span style={{ fontSize: 12, fontFamily: "monospace", color: G, fontWeight: 700 }}>{p.capsOk?.length || 0}/{totalC} ({pct}%)</span>
+                <span style={{ fontSize: 12, fontFamily: "monospace", color: G, fontWeight: 700 }}>{p.capsOk?.length||0}/{totalC} ({pct}%)</span>
               </div>
               <div style={{ height: 5, background: BORDER, borderRadius: 3, overflow: "hidden", marginBottom: 9 }}>
                 <div style={{ height: "100%", width: `${pct}%`, background: "linear-gradient(90deg,#4ade80,#16a34a)", borderRadius: 3, transition: "width .6s" }} />
               </div>
-              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                {(p.capsOk || []).map((c, i) => (
-                  <span key={i} style={{ fontSize: 8, padding: "2px 7px", background: "rgba(34,197,94,.1)", border: "1px solid rgba(34,197,94,.3)", color: darkMode?"#4ade80":"#166534", borderRadius: 3, fontFamily: "monospace" }}>
-                    ✓ {c.split("—")[0].trim()}
-                  </span>
-                ))}
-              </div>
             </div>
           )}
-
           <div style={{ display: "flex", gap: 7, marginTop: 16 }}>
             <button onClick={() => { setTipo("sumario"); setTema(p.nome || "Tratado Jurídico"); setTab("editor"); }}
               style={{ padding: "7px 16px", background: darkMode?"#1a2744":"#0f1a33", color: G, border: `1px solid ${G}`, borderRadius: 4, cursor: "pointer", fontSize: 12, fontFamily: "monospace", fontWeight: 700 }}>
               📋 Gerar Sumário
             </button>
-            <button onClick={() => { if (window.confirm("Limpar todo o projeto?")) { setProj({}); localStorage.removeItem("jep:proj"); } }}
+            <button onClick={() => { if(window.confirm("Limpar todo o projeto?")) { setProj({}); localStorage.removeItem("jep:proj"); } }}
               style={{ padding: "7px 14px", background: CARD, color: "#b91c1c", border: "1px solid #fca5a5", borderRadius: 4, cursor: "pointer", fontSize: 12, fontFamily: "monospace" }}>
               🗑 Limpar
             </button>
@@ -1144,7 +1453,6 @@ function App() {
         </div>
       )}
 
-      {/* Toast global */}
       <Toast msg={toast} onClose={() => setToast("")} />
     </div>
   );
