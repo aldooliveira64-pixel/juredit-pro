@@ -966,6 +966,193 @@ async function gerarResumoCapitulo(texto, onChunk, onStatus) {
 }
 
 // ══════════════════════════════════════════════
+// FASE 5 — VALIDAÇÃO, EXPORTAÇÃO & DASHBOARD
+// ══════════════════════════════════════════════
+
+// 5.7 — Nota de Qualidade Acadêmica (0-100)
+function calcularNota(capitulos, errosABNT=[], fontesValidas=0) {
+  if (!capitulos?.length) return { total:0, detalhe:{} };
+  const total = capitulos.length;
+  const conc  = capitulos.filter(c => c.progresso >= 90).length;
+  const palavras = capitulos.reduce((s,c) => s + contarPalavrasRaw(c.texto), 0);
+  const totalFontes = capitulos.reduce((s,c) => s + (c.doutrina?.length||0), 0);
+  const notas = capitulos.reduce((s,c) => s + contarNotas(c.texto||""), 0);
+
+  const pCaps    = total > 0 ? Math.round((conc/total)*40) : 0;
+  const pFontes  = totalFontes > 0 ? Math.round((Math.min(fontesValidas,totalFontes)/totalFontes)*30) : (totalFontes===0?15:0);
+  const pNotas   = notas >= 25*total ? 20 : Math.round((notas/(25*total||1))*20);
+  const pErros   = Math.max(0, 10 - errosABNT.length * 2);
+  const total_   = Math.min(100, pCaps + pFontes + pNotas + pErros);
+
+  return {
+    total: total_,
+    detalhe: { pCaps, pFontes, pNotas, pErros, conc, totalFontes, notas, palavras },
+    nivel: total_ >= 90 ? "Excelente" : total_ >= 75 ? "Muito Bom" : total_ >= 60 ? "Bom" : total_ >= 40 ? "Regular" : "Insuficiente",
+    cor: total_ >= 90 ? "#16a34a" : total_ >= 75 ? "#c9a84c" : total_ >= 60 ? "#0369a1" : total_ >= 40 ? "#b45309" : "#b91c1c",
+  };
+}
+
+// 5.2 — Validador ABNT (varredura de padrões)
+function validarABNT(capitulos) {
+  const erros = [];
+  const SUPERSCRIPTS = "⁰¹²³⁴⁵⁶⁷⁸⁹";
+  const isSup = s => [...s].every(c => SUPERSCRIPTS.includes(c));
+
+  capitulos.forEach(cap => {
+    if (!cap.texto?.trim()) return;
+    const linhas = cap.texto.split("\n");
+    let emNotas = false;
+    let notasEncontradas = [];
+    let ultimaNota = 0;
+    let temSecaoNotas = false;
+
+    linhas.forEach((linha, li) => {
+      const l = linha.trim();
+      if (/^②\s*NOTAS/i.test(l)) { emNotas = true; temSecaoNotas = true; return; }
+
+      if (emNotas) {
+        // Verifica notas: devem ter número, ponto, espaço, referência
+        const m = l.match(/^([\d⁰¹²³⁴⁵⁶⁷⁸⁹]+)[.\s]\s*(.+)/);
+        if (m) {
+          const n = parseInt(m[1])||0;
+          const ref = m[2];
+          notasEncontradas.push(n);
+          if (n > 0 && n !== ultimaNota + 1 && ultimaNota > 0) {
+            erros.push({ cap: cap.numero, linha: li+1, tipo:"Sequência", msg:`Nota ${n} fora de sequência (esperada ${ultimaNota+1})`, sugestao:`Renumere as notas em sequência contínua`, gravidade:"media" });
+          }
+          ultimaNota = n;
+          // Verifica formato básico da referência
+          if (ref.length < 15) erros.push({ cap:cap.numero, linha:li+1, tipo:"Referência curta", msg:`Nota ${n}: referência muito curta ("${ref.slice(0,40)}")`, sugestao:"Inclua: Autor, *Título*, Editora, ano, p. XX", gravidade:"baixa" });
+          if (!/\d{4}/.test(ref)) erros.push({ cap:cap.numero, linha:li+1, tipo:"Sem ano", msg:`Nota ${n}: sem ano de publicação detectado`, sugestao:"Inclua o ano entre vírgulas: ..., Editora, 2023, p. XX", gravidade:"media" });
+        }
+        return;
+      }
+
+      // No corpo: superscript deve estar colado (sem espaço antes)
+      const badSupMatch = l.match(/\s([¹²³⁴⁵⁶⁷⁸⁹⁰]+)/g);
+      if (badSupMatch) {
+        erros.push({ cap:cap.numero, linha:li+1, tipo:"Nota separada", msg:`Superscript com espaço antes: "${badSupMatch[0].slice(0,20)}"`, sugestao:"Cole a nota à palavra: palavra¹ (sem espaço)", gravidade:"baixa" });
+      }
+    });
+
+    if (!temSecaoNotas && cap.texto.length > 500) {
+      erros.push({ cap:cap.numero, linha:0, tipo:"Sem seção ②", msg:"Capítulo sem seção '② NOTAS DE RODAPÉ'", sugestao:"Adicione a seção de notas ao final do capítulo", gravidade:"alta" });
+    }
+    if (notasEncontradas.length > 0 && notasEncontradas.length < 12) {
+      erros.push({ cap:cap.numero, linha:0, tipo:"Poucas notas", msg:`Apenas ${notasEncontradas.length} nota(s) encontrada(s) (mínimo recomendado: 15)`, sugestao:"Enriqueça com mais citações doutrinárias e jurisprudenciais", gravidade:"media" });
+    }
+  });
+
+  return erros;
+}
+
+// 5.3 — Extrai números de processo e valida via Claude
+function extrairProcessos(texto) {
+  if (!texto) return [];
+  const re = /(?:REsp|HC|ADI|ARE|RE|AgInt|AREsp|AgRg|MS|MI|ADC|ADPF|RMS|RO|ACO|Ext|Rcl|AI)\s*[\d.,/\-]+/gi;
+  const found = [...new Set((texto.match(re)||[]).map(m=>m.trim()))];
+  return found;
+}
+
+async function validarProcessosIA(capitulos, onStatus) {
+  const todos = capitulos.flatMap(c => extrairProcessos(c.texto||""));
+  const unicos = [...new Set(todos)];
+  if (!unicos.length) return [];
+
+  onStatus?.("🔍 Validando processos via IA...");
+  const prompt = `Você é especialista em jurisprudência dos tribunais superiores brasileiros (STF, STJ, TST, TSE).
+
+Analise os seguintes números de processo extraídos de um tratado jurídico e avalie a PLAUSIBILIDADE de cada um:
+
+${unicos.map((p,i)=>`${i+1}. ${p}`).join("\n")}
+
+Para cada processo, responda em JSON array com objetos: { "numero": "...", "plausivel": true/false, "tribunal": "...", "motivo": "breve explicação" }
+
+Critérios: formato correto para o tipo de ação, tribunal compatível com o tipo, numeração na faixa possível.
+Responda APENAS com o JSON array, sem texto adicional.`;
+
+  try {
+    const raw = await chamarClaudeStream(
+      [{role:"user",content:prompt}],
+      "Você é especialista em jurisprudência brasileira. Responda apenas com JSON válido.",
+      null, onStatus
+    );
+    const jsonStr = raw.replace(/```json?|```/gi,"").trim();
+    const parsed = JSON.parse(jsonStr);
+    onStatus?.("");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch(e) {
+    onStatus?.("");
+    return unicos.map(numero => ({ numero, plausivel:null, tribunal:"?", motivo:"Não foi possível verificar automaticamente" }));
+  }
+}
+
+// 5.4 — Exportar tratado completo em .docx (todos os capítulos)
+async function exportarTratadoCompleto(capitulos, proj) {
+  if (!capitulos?.length) return;
+  const capsCom = capitulos.filter(c=>c.texto?.trim());
+  if (!capsCom.length) return;
+
+  // Monta texto unificado com separação entre capítulos
+  const textoUnificado = capsCom.map(c => {
+    const heading = `CAPÍTULO ${c.numero}\n${(c.titulo||"").toUpperCase()}\n\n`;
+    return heading + (c.texto||"");
+  }).join("\n\n---\n\n");
+
+  // Gera bloco de referências
+  const refs = abntGerarListaReferencias(capitulos.flatMap(c=>c.doutrina||[]));
+  const textoFinal = textoUnificado + (refs ? "\n\n---\n\n" + refs : "");
+
+  await gerarDocx(textoFinal, proj?.nome||"Tratado Jurídico", proj);
+}
+
+// 5.5 — Exportar PDF via impressão estilizada do browser
+function exportarTratadoPDF(capitulos, proj) {
+  const capsCom = capitulos.filter(c=>c.texto?.trim());
+  if (!capsCom.length) { alert("Nenhum capítulo com conteúdo para exportar."); return; }
+
+  const body = capsCom.map(c => {
+    const txt = (c.texto||"")
+      .replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>")
+      .replace(/\*([^*]+)\*/g,"<em>$1</em>")
+      .replace(/^>\s*(.+)$/gm,"<blockquote>$1</blockquote>")
+      .replace(/\n{2,}/g,"</p><p>")
+      .replace(/\n/g,"<br/>");
+    return `<div class="cap-break">
+      <h2>CAPÍTULO ${c.numero}</h2>
+      <h3>${c.titulo||""}</h3>
+      <div class="cap-body"><p>${txt}</p></div>
+    </div>`;
+  }).join("\n");
+
+  const refs = abntGerarListaReferencias(capitulos.flatMap(c=>c.doutrina||[]));
+  const refsHtml = refs ? `<div class="cap-break"><h2>REFERÊNCIAS</h2><pre style="font-family:Georgia;font-size:11pt;white-space:pre-wrap;line-height:1.8">${refs}</pre></div>` : "";
+
+  const win = window.open("","_blank");
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/>
+  <title>${proj?.nome||"Tratado Jurídico"}</title>
+  <style>
+    @page{size:A4;margin:3cm 2.5cm 2.5cm 3cm}
+    *{box-sizing:border-box}
+    body{font-family:"Times New Roman",serif;font-size:12pt;line-height:1.5;color:#000;background:#fff}
+    h1{font-size:16pt;text-align:center;margin:2cm 0 1cm}
+    h2{font-size:14pt;text-align:center;margin:1.5cm 0 .5cm;text-transform:uppercase}
+    h3{font-size:13pt;text-align:center;margin:.5cm 0 1cm}
+    p{text-indent:1.25cm;text-align:justify;margin:.15cm 0}
+    blockquote{margin:1cm 4cm;font-style:italic;font-size:10pt;line-height:1.4}
+    .cap-break{page-break-before:always}
+    .cap-break:first-child{page-break-before:avoid}
+    strong{font-weight:bold}em{font-style:italic}
+  </style></head><body>
+  <h1>${proj?.nome||"Tratado Jurídico"}</h1>
+  ${proj?.area?`<p style="text-align:center;font-style:italic">${proj.area}</p>`:""}
+  ${body}${refsHtml}
+  <script>window.onload=()=>{window.print();}<\/script>
+  </body></html>`);
+  win.document.close();
+}
+
+// ══════════════════════════════════════════════
 // UTILITÁRIOS
 // ══════════════════════════════════════════════
 function contarPalavras(text) { return text ? text.trim().split(/\s+/).filter(Boolean).length : 0; }
@@ -1050,7 +1237,13 @@ function App() {
   const [fontesSalvas,setFontesSalvas]=useState(()=>load("jep:fontes",[]));
   const [biblioAbntInput,setBiblioAbntInput]=useState("");
   const [biblioSearchTerm,setBiblioSearchTerm]=useState("");
-  // ── FASE 3.4: Sidebar Doutrina ──
+  // ── FASE 5: Validação & Dashboard ──
+  const [errosABNT,setErrosABNT]=useState([]);
+  const [resultadosProc,setResultadosProc]=useState([]);
+  const [validandoABNT,setValidandoABNT]=useState(false);
+  const [validandoProc,setValidandoProc]=useState(false);
+  const [fontesAprovadas,setFontesAprovadas]=useState(()=>load("jep:fontesAprov",{}));
+  const [notaQual,setNotaQual]=useState(null);
   const [showSidebar,setShowSidebar]=useState(false);
   const [capituloAtivo,setCapituloAtivo]=useState({titulo:"Capítulo ativo",doutrina:[]});
   // ── FASE 4: Capítulos ──
@@ -1080,6 +1273,7 @@ function App() {
   useEffect(()=>save("jep:sessoes",sessoes),[sessoes]);
   useEffect(()=>save("jep:fontes",fontesSalvas),[fontesSalvas]);
   useEffect(()=>save("jep:caps",capitulos),[capitulos]);
+  useEffect(()=>save("jep:fontesAprov",fontesAprovadas),[fontesAprovadas]);
   useEffect(()=>{ if(capitulos.length>1) setAlertasCoer(verificarCoerencia(capitulos)); },[capitulos]);
   useEffect(()=>botRef.current?.scrollIntoView({behavior:"smooth"}),[msgs,loading,streamText]);
   useEffect(()=>biblioRef.current?.scrollIntoView({behavior:"smooth"}),[biblioResult,biblioStream]);
@@ -1155,6 +1349,29 @@ function App() {
   const totalPalavrasCaps = capitulos.reduce((s,c)=>s+contarPalavrasRaw(c.texto),0);
   const capsConc = capitulos.filter(c=>c.progresso>=90).length;
   const capSel = capitulos.find(c=>c.id===capSelId)||null;
+
+  // ── FASE 5: helpers de validação ──
+  const rodarValidacaoABNT = () => {
+    setValidandoABNT(true);
+    const erros = validarABNT(capitulos);
+    setErrosABNT(erros);
+    const fn = Object.values(fontesAprovadas).filter(Boolean).length;
+    setNotaQual(calcularNota(capitulos, erros, fn));
+    setValidandoABNT(false);
+    setToast(erros.length===0?"✅ Nenhum erro ABNT encontrado!":`⚠️ ${erros.length} problema(s) ABNT detectado(s)`);
+  };
+  const rodarValidacaoProc = async() => {
+    setValidandoProc(true); setResultadosProc([]);
+    const r = await validarProcessosIA(capitulos, setStatus);
+    setResultadosProc(r); setValidandoProc(false); setStatus("");
+    const inv = r.filter(x=>x.plausivel===false).length;
+    setToast(inv===0?`✅ ${r.length} processo(s) — todos plausíveis`:`⚠️ ${inv} processo(s) suspeito(s) de ${r.length}`);
+  };
+  const toggleFonteAprov = (id) => setFontesAprovadas(fa=>({...fa,[id]:!fa[id]}));
+  const todasFontes = capitulos.flatMap(c=>(c.doutrina||[]).map(d=>({...d,_capNum:c.numero})));
+  const fontesUnicas = [...new Map(todasFontes.map(f=>[f.id,f])).values()];
+  const notaAtual = notaQual || calcularNota(capitulos, errosABNT, Object.values(fontesAprovadas).filter(Boolean).length);
+
     const txt=override!==undefined?String(override).trim():tema.trim();
     if(!txt||loading) return;
     if(motor==="gemini"&&!geminiKey?.trim()){setStatus("❌ Cole a chave Gemini nas configurações.");setTab("editor");return;}
@@ -1321,11 +1538,12 @@ function App() {
 
       {/* ══ NAV ══ */}
       <div style={{background:CARD,borderBottom:`2px solid ${BORDER}`,display:"flex",alignItems:"stretch",flexShrink:0,overflowX:"auto"}}>
-        {[{id:"inicio",ic:"🏠",l:"Início"},{id:"editor",ic:"✍️",l:"Editor"},{id:"capitulos",ic:"📖",l:"Capítulos"},{id:"templates",ic:"📌",l:"Templates"},{id:"biblio",ic:"📚",l:"Bibliotecas"},{id:"busca",ic:"🔎",l:"Busca Jur."},{id:"projeto",ic:"🗂",l:"Projeto"}].map(t=>(
+        {[{id:"inicio",ic:"🏠",l:"Início"},{id:"editor",ic:"✍️",l:"Editor"},{id:"capitulos",ic:"📖",l:"Capítulos"},{id:"validar",ic:"✓",l:"Validar"},{id:"templates",ic:"📌",l:"Templates"},{id:"biblio",ic:"📚",l:"Bibliotecas"},{id:"busca",ic:"🔎",l:"Busca Jur."},{id:"projeto",ic:"🗂",l:"Projeto"}].map(t=>(
           <button key={t.id} className="nav-tab" onClick={()=>setTab(t.id)}
             style={{padding:"8px 14px",border:"none",borderBottom:`3px solid ${tab===t.id?G:"transparent"}`,background:tab===t.id?(darkMode?"rgba(201,168,76,.08)":"#fdfaf4"):CARD,cursor:"pointer",fontSize:11,color:tab===t.id?(darkMode?G:N):TEXT2,fontFamily:"Georgia,serif",fontWeight:tab===t.id?700:400,display:"flex",alignItems:"center",gap:4,transition:"all .12s",marginBottom:-2,whiteSpace:"nowrap",flexShrink:0}}>
             <span>{t.ic}</span>{t.l}
             {t.id==="capitulos"&&<span style={{fontSize:7,padding:"1px 4px",background:"rgba(124,58,237,.2)",border:"1px solid #7c3aed40",color:"#7c3aed",borderRadius:3,fontFamily:"monospace",marginLeft:2}}>FASE 4</span>}
+            {t.id==="validar"&&<span style={{fontSize:7,padding:"1px 4px",background:"rgba(22,163,74,.2)",border:"1px solid rgba(22,163,74,.4)",color:"#16a34a",borderRadius:3,fontFamily:"monospace",marginLeft:2}}>FASE 5</span>}
             {t.id==="biblio"&&<span style={{fontSize:7,padding:"1px 4px",background:"rgba(201,168,76,.2)",border:`1px solid ${G}40`,color:G,borderRadius:3,fontFamily:"monospace",marginLeft:2}}>FASE 3</span>}
           </button>
         ))}
@@ -1796,6 +2014,214 @@ function App() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ══════════ VALIDAR — FASE 5 ══════════ */}
+      {tab==="validar"&&(
+        <div style={{flex:1,overflowY:"auto",padding:"18px 22px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16,flexWrap:"wrap",gap:10}}>
+            <div>
+              <div style={{fontSize:8,color:TEXT2,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:".13em",marginBottom:4}}>Fase 5 — Validação, Exportação & Dashboard</div>
+              <div style={{fontSize:14,fontWeight:700,color:N}}>✓ Central de Validação do Tratado</div>
+              <div style={{fontSize:10,color:TEXT2,marginTop:3}}>ABNT · processos · coerência · exportação .docx e PDF · aprovação de fontes</div>
+            </div>
+            {/* Exportação rápida */}
+            <div style={{display:"flex",gap:7}}>
+              <button onClick={()=>exportarTratadoCompleto(capitulos,p)} style={{padding:"9px 16px",background:"#8b1a1a",color:"white",border:"none",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700}}>⬇ .docx Completo</button>
+              <button onClick={()=>exportarTratadoPDF(capitulos,p)} style={{padding:"9px 16px",background:"#0f1a33",color:G,border:`1px solid ${G}`,borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700}}>⬇ PDF</button>
+            </div>
+          </div>
+
+          {/* ── 5.7 NOTA DE QUALIDADE ACADÊMICA ── */}
+          <div style={{background:CARD,border:`2px solid ${notaAtual.cor||BORDER}`,borderRadius:12,padding:"16px 20px",marginBottom:16,position:"relative",overflow:"hidden"}}>
+            <div style={{position:"absolute",top:0,left:0,bottom:0,width:4,background:notaAtual.cor||BORDER}}/>
+            <div style={{display:"flex",alignItems:"center",gap:20,flexWrap:"wrap"}}>
+              {/* Gauge */}
+              <div style={{textAlign:"center",flexShrink:0}}>
+                <div style={{fontSize:52,fontWeight:900,color:notaAtual.cor||N,lineHeight:1,fontFamily:"monospace"}}>{notaAtual.total}</div>
+                <div style={{fontSize:12,color:TEXT2}}>/100</div>
+                <div style={{fontSize:11,fontWeight:700,color:notaAtual.cor||N,marginTop:4}}>{notaAtual.nivel||"—"}</div>
+              </div>
+              {/* Barra circular via SVG simples */}
+              <svg width="80" height="80" style={{flexShrink:0}}>
+                <circle cx="40" cy="40" r="32" fill="none" stroke={BORDER} strokeWidth="8"/>
+                <circle cx="40" cy="40" r="32" fill="none" stroke={notaAtual.cor||G} strokeWidth="8"
+                  strokeDasharray={`${(notaAtual.total/100)*201} 201`}
+                  strokeLinecap="round" transform="rotate(-90 40 40)" style={{transition:"stroke-dasharray .8s"}}/>
+              </svg>
+              {/* Breakdown */}
+              <div style={{flex:1,minWidth:200}}>
+                <div style={{fontSize:11,fontWeight:700,color:N,marginBottom:8}}>Nota de Qualidade Acadêmica</div>
+                {notaAtual.detalhe&&[
+                  {l:"Capítulos concluídos (≥90%)",v:notaAtual.detalhe.pCaps,max:40,info:`${notaAtual.detalhe.conc||0} de ${capitulos.length}`},
+                  {l:"Fontes doutrinárias aprovadas",v:notaAtual.detalhe.pFontes,max:30,info:`${Object.values(fontesAprovadas).filter(Boolean).length} de ${fontesUnicas.length}`},
+                  {l:"Notas de rodapé (≥25/cap.)",v:notaAtual.detalhe.pNotas,max:20,info:`${notaAtual.detalhe.notas||0} total`},
+                  {l:"Ausência de erros ABNT",v:notaAtual.detalhe.pErros,max:10,info:`${errosABNT.length} erro(s)`},
+                ].map((item,i)=>(
+                  <div key={i} style={{marginBottom:6}}>
+                    <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+                      <span style={{fontSize:9,color:TEXT2}}>{item.l}</span>
+                      <span style={{fontSize:9,fontFamily:"monospace",color:N,fontWeight:700}}>{item.v}/{item.max} pts <span style={{color:TEXT2,fontWeight:400}}>({item.info})</span></span>
+                    </div>
+                    <div style={{height:4,background:BORDER,borderRadius:2,overflow:"hidden"}}>
+                      <div style={{height:"100%",width:`${(item.v/item.max)*100}%`,background:notaAtual.cor||G,borderRadius:2,transition:"width .6s"}}/>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {/* Botão recalcular */}
+              <button onClick={rodarValidacaoABNT} style={{padding:"8px 14px",background:"transparent",border:`1px solid ${G}`,color:G,borderRadius:6,cursor:"pointer",fontSize:10,fontFamily:"monospace",fontWeight:700,alignSelf:"flex-start"}}>🔄 Recalcular</button>
+            </div>
+          </div>
+
+          {/* ── 5.2 VALIDADOR ABNT ── */}
+          <div style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:10,padding:"14px 16px",marginBottom:14}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+              <div>
+                <div style={{fontSize:12,fontWeight:700,color:N}}>📐 Validador ABNT NBR 6023:2018</div>
+                <div style={{fontSize:9,color:TEXT2,fontFamily:"monospace",marginTop:2}}>Verifica formato das notas, sequência de numeração, anos, referências curtas</div>
+              </div>
+              <button onClick={rodarValidacaoABNT} disabled={validandoABNT||!capitulos.some(c=>c.texto)}
+                style={{padding:"7px 16px",background:validandoABNT?(darkMode?"#1e2d45":"#d4cfc6"):(darkMode?"#1a2744":"#0f1a33"),color:validandoABNT?TEXT2:G,border:`1px solid ${G}`,borderRadius:5,cursor:"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700,display:"flex",alignItems:"center",gap:6}}>
+                {validandoABNT?<><div style={{width:10,height:10,borderRadius:"50%",border:`2px solid ${G}`,borderTopColor:"transparent",animation:"spin 1s linear infinite"}}/>Validando…</>:"📐 Validar ABNT"}
+              </button>
+            </div>
+            {errosABNT.length===0&&!validandoABNT&&(
+              <div style={{fontSize:11,color:"#16a34a",fontFamily:"monospace",padding:"10px 14px",background:"rgba(22,163,74,.07)",borderRadius:6,border:"1px solid rgba(22,163,74,.2)"}}>✅ {capitulos.some(c=>c.texto)?"Nenhum erro ABNT detectado. Clique em Validar ABNT para rodar a análise.":"Adicione capítulos com conteúdo para validar."}</div>
+            )}
+            {errosABNT.length>0&&(
+              <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:280,overflowY:"auto"}}>
+                {["alta","media","baixa"].map(grav=>{
+                  const errosG = errosABNT.filter(e=>e.gravidade===grav);
+                  if(!errosG.length) return null;
+                  const corG = grav==="alta"?"#b91c1c":grav==="media"?"#b45309":"#0369a1";
+                  return (<div key={grav}>
+                    <div style={{fontSize:8,color:corG,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:".08em",marginBottom:4,marginTop:6}}>{grav==="alta"?"🔴 Crítico":grav==="media"?"🟡 Médio":"🔵 Leve"} — {errosG.length} ocorrência{errosG.length!==1?"s":""}</div>
+                    {errosG.map((e,i)=>(
+                      <div key={i} style={{padding:"8px 12px",background:`${corG}08`,border:`1px solid ${corG}25`,borderRadius:6,marginBottom:5}}>
+                        <div style={{display:"flex",gap:8,alignItems:"flex-start"}}>
+                          <span style={{fontSize:9,padding:"1px 6px",background:`${corG}15`,color:corG,borderRadius:3,fontFamily:"monospace",whiteSpace:"nowrap"}}>Cap. {e.cap}{e.linha>0?` · L${e.linha}`:""}</span>
+                          <div>
+                            <div style={{fontSize:11,color:N,fontWeight:700,marginBottom:2}}>{e.tipo}: {e.msg}</div>
+                            <div style={{fontSize:10,color:TEXT2}}>💡 {e.sugestao}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>);
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* ── 5.3 VALIDADOR DE PROCESSOS ── */}
+          <div style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:10,padding:"14px 16px",marginBottom:14}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+              <div>
+                <div style={{fontSize:12,fontWeight:700,color:N}}>🔍 Validador de Processos Judiciais</div>
+                <div style={{fontSize:9,color:TEXT2,fontFamily:"monospace",marginTop:2}}>Extrai todos os números de processo e avalia plausibilidade via IA</div>
+              </div>
+              <button onClick={rodarValidacaoProc} disabled={validandoProc||!capitulos.some(c=>c.texto)}
+                style={{padding:"7px 16px",background:validandoProc?(darkMode?"#1e2d45":"#d4cfc6"):(darkMode?"#1a2744":"#0f1a33"),color:validandoProc?TEXT2:G,border:`1px solid ${G}`,borderRadius:5,cursor:"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700,display:"flex",alignItems:"center",gap:6}}>
+                {validandoProc?<><div style={{width:10,height:10,borderRadius:"50%",border:`2px solid ${G}`,borderTopColor:"transparent",animation:"spin 1s linear infinite"}}/>Verificando…</>:"🔍 Verificar Processos"}
+              </button>
+            </div>
+            {/* Processos extraídos preview */}
+            {!validandoProc&&resultadosProc.length===0&&(
+              <div style={{fontSize:10,color:TEXT2,fontFamily:"monospace",padding:"8px 0"}}>
+                {capitulos.some(c=>c.texto)
+                  ? `Processos encontrados nos capítulos: ${[...new Set(capitulos.flatMap(c=>extrairProcessos(c.texto||"")))].slice(0,8).join(", ")||"nenhum detectado"}. Clique em Verificar para analisar.`
+                  : "Adicione capítulos com conteúdo para verificar processos."}
+              </div>
+            )}
+            {resultadosProc.length>0&&(
+              <div style={{display:"flex",flexDirection:"column",gap:5,maxHeight:240,overflowY:"auto"}}>
+                {resultadosProc.map((r,i)=>{
+                  const cor=r.plausivel===true?"#16a34a":r.plausivel===false?"#b91c1c":"#b45309";
+                  const ic=r.plausivel===true?"✅":r.plausivel===false?"❌":"⚠️";
+                  return(
+                    <div key={i} style={{padding:"8px 12px",background:`${cor}08`,border:`1px solid ${cor}25`,borderRadius:6,display:"flex",gap:10,alignItems:"flex-start"}}>
+                      <span style={{fontSize:14,flexShrink:0}}>{ic}</span>
+                      <div>
+                        <div style={{fontSize:11,fontWeight:700,color:N,fontFamily:"monospace"}}>{r.numero}</div>
+                        <div style={{fontSize:9,color:TEXT2}}>{r.tribunal&&`${r.tribunal} · `}{r.motivo}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* ── 5.6 DASHBOARD DE FONTES ── */}
+          <div style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:10,padding:"14px 16px",marginBottom:14}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+              <div>
+                <div style={{fontSize:12,fontWeight:700,color:N}}>📋 Dashboard de Fontes — Aprovação Manual</div>
+                <div style={{fontSize:9,color:TEXT2,fontFamily:"monospace",marginTop:2}}>{fontesUnicas.length} fonte{fontesUnicas.length!==1?"s":""} importada{fontesUnicas.length!==1?"s":""} · {Object.values(fontesAprovadas).filter(Boolean).length} aprovada{Object.values(fontesAprovadas).filter(Boolean).length!==1?"s":""}</div>
+              </div>
+              {fontesUnicas.length>0&&(
+                <div style={{display:"flex",gap:6}}>
+                  <button onClick={()=>{const fa={};fontesUnicas.forEach(f=>fa[f.id]=true);setFontesAprovadas(fa);setToast("✅ Todas as fontes aprovadas");}} style={{padding:"5px 12px",background:"rgba(22,163,74,.1)",border:"1px solid rgba(22,163,74,.3)",color:"#16a34a",borderRadius:4,cursor:"pointer",fontSize:10,fontFamily:"monospace"}}>✓ Aprovar todas</button>
+                  <button onClick={()=>hCopy(abntGerarListaReferencias(fontesUnicas.filter(f=>fontesAprovadas[f.id])),"refs5")} style={{padding:"5px 12px",background:"transparent",border:`1px solid ${BORDER}`,color:TEXT2,borderRadius:4,cursor:"pointer",fontSize:10,fontFamily:"monospace"}}>{cpFb["refs5"]?"✓ Copiado!":"📋 Copiar ABNT"}</button>
+                </div>
+              )}
+            </div>
+            {fontesUnicas.length===0?(
+              <div style={{fontSize:11,color:TEXT2,fontFamily:"monospace",padding:"10px 0"}}>Nenhuma fonte importada. Use 📚 Importar Doutrina no Editor ou na aba Capítulos.</div>
+            ):(
+              <div style={{display:"flex",flexDirection:"column",gap:5,maxHeight:300,overflowY:"auto"}}>
+                {fontesUnicas.map(f=>{
+                  const aprov=!!fontesAprovadas[f.id];
+                  const cor=TIPO_COR_DOC[f.tipo]||"#64748b";
+                  return(
+                    <div key={f.id} onClick={()=>toggleFonteAprov(f.id)}
+                      style={{display:"flex",gap:10,padding:"9px 12px",border:`2px solid ${aprov?cor:BORDER}`,borderRadius:7,background:aprov?`${cor}07`:CARD,cursor:"pointer",transition:"all .13s",alignItems:"flex-start"}}>
+                      <input type="checkbox" checked={aprov} onChange={()=>toggleFonteAprov(f.id)} onClick={e=>e.stopPropagation()} style={{marginTop:2,accentColor:cor,flexShrink:0}}/>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:11,fontWeight:aprov?700:400,color:N,marginBottom:2}}>{f.titulo?.slice(0,80)}{f.titulo?.length>80?"…":""}</div>
+                        <div style={{fontSize:9,color:TEXT2,fontFamily:"monospace"}}>{f.autor} {f.ano&&`· ${f.ano}`} · Cap. {f._capNum}</div>
+                        <div style={{fontSize:9,color:TEXT2,marginTop:3,fontStyle:"italic"}}>{f.notaRodape?.slice(0,80)}{f.notaRodape?.length>80?"…":""}</div>
+                      </div>
+                      <span style={{fontSize:8,padding:"1px 5px",background:`${cor}15`,color:cor,borderRadius:3,fontFamily:"monospace",flexShrink:0}}>{f.tipo}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {/* Bloco ABNT das aprovadas */}
+            {Object.values(fontesAprovadas).filter(Boolean).length>0&&(
+              <div style={{marginTop:12,padding:"10px 12px",background:darkMode?"#0a1628":"#fdfaf4",border:`1px solid ${G}30`,borderRadius:6,fontSize:10,color:TEXT2,lineHeight:1.8,fontFamily:"monospace",whiteSpace:"pre-wrap",maxHeight:150,overflowY:"auto"}}>
+                {abntGerarListaReferencias(fontesUnicas.filter(f=>fontesAprovadas[f.id]))}
+              </div>
+            )}
+          </div>
+
+          {/* ── 5.4 / 5.5 EXPORTAÇÃO ── */}
+          <div style={{background:`linear-gradient(135deg,${darkMode?"#0a1628":"#fdfaf4"},${darkMode?"#111827":"white"})`,border:`1px solid ${G}40`,borderRadius:10,padding:"16px 20px"}}>
+            <div style={{fontSize:12,fontWeight:700,color:N,marginBottom:12}}>⬇ Exportar Tratado Completo</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+              {/* .docx */}
+              <div style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:8,padding:"14px 16px"}}>
+                <div style={{fontSize:20,marginBottom:8}}>📄</div>
+                <div style={{fontSize:12,fontWeight:700,color:N,marginBottom:4}}>Word (.docx)</div>
+                <div style={{fontSize:10,color:TEXT2,lineHeight:1.6,marginBottom:12}}>Todos os capítulos em sequência · sumário · notas de rodapé ABNT · cabeçalho com título · paginação automática · Times New Roman 12pt</div>
+                <div style={{fontSize:9,color:TEXT2,marginBottom:8,fontFamily:"monospace"}}>{capitulos.filter(c=>c.texto).length} capítulo{capitulos.filter(c=>c.texto).length!==1?"s":""} · {totalPalavrasCaps.toLocaleString("pt-BR")} palavras · {abntGerarListaReferencias(fontesUnicas.filter(f=>fontesAprovadas[f.id])).split("\n\n").length} referências aprovadas</div>
+                <button onClick={()=>exportarTratadoCompleto(capitulos,p)} disabled={!capitulos.some(c=>c.texto)}
+                  style={{width:"100%",padding:"9px",background:capitulos.some(c=>c.texto)?"#8b1a1a":"#d4cfc6",color:"white",border:"none",borderRadius:5,cursor:capitulos.some(c=>c.texto)?"pointer":"not-allowed",fontSize:12,fontFamily:"monospace",fontWeight:700}}>⬇ Exportar .docx</button>
+              </div>
+              {/* PDF */}
+              <div style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:8,padding:"14px 16px"}}>
+                <div style={{fontSize:20,marginBottom:8}}>📑</div>
+                <div style={{fontSize:12,fontWeight:700,color:N,marginBottom:4}}>PDF</div>
+                <div style={{fontSize:10,color:TEXT2,lineHeight:1.6,marginBottom:12}}>Abre janela de impressão formatada para A4 · Times New Roman · margens ABNT · referências ao final · compatível com impressão e salvar como PDF</div>
+                <div style={{fontSize:9,color:TEXT2,marginBottom:8,fontFamily:"monospace"}}>Gerado via impressão do browser · gratuito · sem plugin</div>
+                <button onClick={()=>exportarTratadoPDF(capitulos,p)} disabled={!capitulos.some(c=>c.texto)}
+                  style={{width:"100%",padding:"9px",background:capitulos.some(c=>c.texto)?(darkMode?"#1a2744":"#0f1a33"):"#d4cfc6",color:capitulos.some(c=>c.texto)?G:"#9ca3af",border:`1px solid ${capitulos.some(c=>c.texto)?G:"#d4cfc6"}`,borderRadius:5,cursor:capitulos.some(c=>c.texto)?"pointer":"not-allowed",fontSize:12,fontFamily:"monospace",fontWeight:700}}>⬇ Exportar PDF</button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
