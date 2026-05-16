@@ -854,6 +854,118 @@ function buildBiblioPrompt(modo, termo, area) {
 }
 
 // ══════════════════════════════════════════════
+// FASE 4 — ESCRITA CAPÍTULO POR CAPÍTULO
+// ══════════════════════════════════════════════
+
+const PALAVRAS_ALVO_CAP = 3000; // 3000 palavras = 100% de progresso
+
+// 4.4 — Calcula progresso do capítulo (0-100)
+function calcularProgresso(texto) {
+  if (!texto?.trim()) return 0;
+  return Math.min(100, Math.round((contarPalavrasRaw(texto) / PALAVRAS_ALVO_CAP) * 100));
+}
+function contarPalavrasRaw(t) { return t ? t.trim().split(/\s+/).filter(Boolean).length : 0; }
+
+// 4.6 — Similaridade de cosseno entre dois textos
+function cosineSimilaridade(texto1, texto2) {
+  if (!texto1?.trim() || !texto2?.trim()) return 0;
+  const tokenizar = (t) => {
+    const freq = {};
+    t.toLowerCase().replace(/[^\w\sáéíóúãõâêîôûàèìòùç]/g,"").split(/\s+/).filter(p=>p.length>3)
+      .forEach(p => freq[p] = (freq[p]||0) + 1);
+    return freq;
+  };
+  const f1 = tokenizar(texto1.slice(0,6000));
+  const f2 = tokenizar(texto2.slice(0,6000));
+  const vocab = new Set([...Object.keys(f1),...Object.keys(f2)]);
+  let dot=0, n1=0, n2=0;
+  vocab.forEach(w => { const v1=f1[w]||0, v2=f2[w]||0; dot+=v1*v2; n1+=v1*v1; n2+=v2*v2; });
+  if (!n1||!n2) return 0;
+  return dot / (Math.sqrt(n1)*Math.sqrt(n2));
+}
+
+// 4.5 — Verificar coerência entre capítulos (retorna alertas)
+function verificarCoerencia(capitulos) {
+  const alertas = {};
+  for (let i=1; i<capitulos.length; i++) {
+    if (capitulos[i].texto?.length > 200 && capitulos[i-1].texto?.length > 200) {
+      const sim = cosineSimilaridade(capitulos[i].texto, capitulos[i-1].texto);
+      alertas[capitulos[i].id] = sim > 0.85 ? sim : 0;
+    }
+  }
+  return alertas;
+}
+
+// 4.2 — Prompt template encadeado com contexto do capítulo anterior
+function buildPromptCapitulo(cap, capAnterior, doutrina, juris, area, nivel, proj) {
+  const resumoCtx = capAnterior?.resumo
+    ? `\n\n══ RESUMO DO CAPÍTULO ANTERIOR (Cap. ${capAnterior.numero} — ${capAnterior.titulo}) ══\n${capAnterior.resumo}\n[Este resumo garante coerência narrativa — evite repetir os pontos acima.]`
+    : capAnterior?.texto?.length > 100
+      ? `\n\n[Nota: O capítulo anterior (${capAnterior.numero} — ${capAnterior.titulo}) está em andamento. Mantenha coerência temática.]`
+      : "";
+
+  const doutrinaCtx = doutrina?.length
+    ? `\n\n══ FONTES DOUTRINÁRIAS PARA INTEGRAR ══\n${doutrina.slice(0,8).map(d=>`• ${d.notaRodape||d.abntRef||d.titulo}`).join("\n")}`
+    : "";
+
+  const jurisCtx = juris?.length
+    ? `\n\n══ JURISPRUDÊNCIA PARA INTEGRAR ══\n${juris.slice(0,5).map((j,i)=>`${i+1}. ${j}`).join("\n")}`
+    : "";
+
+  return `Você é coautor jurídico acadêmico de nível doutorado. Projeto: "${proj?.nome||"Tratado Jurídico"}" | Área: ${area} | Nível: ${nivel}
+${resumoCtx}${doutrinaCtx}${jurisCtx}
+
+══ TAREFA ══
+Escreva o **Capítulo ${cap.numero}: "${cap.titulo}"** completo, com mínimo de 3.000 palavras.
+
+ESTRUTURA OBRIGATÓRIA:
+CAPÍTULO ${cap.numero}
+${cap.titulo.toUpperCase()}
+EMENTA_CAP: [subtemas do capítulo]
+---
+
+**Abertura e Contextualização**
+[3 parágrafos — situe o leitor, conecte ao capítulo anterior se houver]
+
+**Conceito, Natureza Jurídica e Fundamentos**
+[4+ parágrafos — defina, delimite, diferencie com notas ¹²³]
+
+**Regime Jurídico e Elementos Constitutivos**
+[4+ parágrafos — legislação vigente 2025, requisitos, efeitos]
+
+**Análise Jurisprudencial — STF e STJ (2020-2025)**
+> *EMENTA: [resumo]. (STJ, REsp X.XXX/UF, Rel. Min. Nome, Nª Turma, DJe DD.MM.AAAA.)*
+[Mínimo 4 precedentes — integre os acórdãos fornecidos acima]
+
+**Controvérsias Doutrinárias e Tendências**
+[3+ parágrafos — correntes, dissonâncias, posição predominante]
+
+**Síntese do Capítulo**
+[3 parágrafos de fechamento — prepara o terreno para o próximo capítulo]
+
+② NOTAS DE RODAPÉ
+¹ Prenome SOBRENOME, *Título*, N. ed., Cidade, Editora, ano, p. XX.
+[MÍNIMO 25 NOTAS — inclua doutrina e jurisprudência fornecidas]
+
+REGRAS ABSOLUTAS:
+✗ Nunca invente número de processo, relator, ementa ou página
+✓ Notas ¹²³ coladas à palavra: ex. Di Pietro¹ sustenta
+✓ Voz impessoal: "cumpre observar", "não se pode olvidar", "destarte"
+✓ Entregue COMPLETO — nunca truncar`;
+}
+
+// 4.3 — Gera resumo automático de 150 palavras do capítulo anterior
+async function gerarResumoCapitulo(texto, onChunk, onStatus) {
+  onStatus?.("📝 Resumindo capítulo anterior...");
+  const prompt = `Você é um assistente jurídico especializado em sínteses acadêmicas. Leia o capítulo abaixo e produza um RESUMO EXECUTIVO em exatamente 150 palavras, preservando: (1) as teses centrais, (2) a legislação mencionada, (3) os precedentes judiciais mais relevantes, (4) as controvérsias doutrinárias identificadas. O resumo será usado como contexto para o próximo capítulo.\n\nCAPÍTULO:\n${texto.slice(0,10000)}`;
+  return await chamarClaudeStream(
+    [{role:"user",content:prompt}],
+    "Você é especialista em sínteses jurídicas acadêmicas. Seja preciso, técnico e objetivo.",
+    onChunk, onStatus
+  );
+}
+
+// ══════════════════════════════════════════════
 // UTILITÁRIOS
 // ══════════════════════════════════════════════
 function contarPalavras(text) { return text ? text.trim().split(/\s+/).filter(Boolean).length : 0; }
@@ -941,6 +1053,14 @@ function App() {
   // ── FASE 3.4: Sidebar Doutrina ──
   const [showSidebar,setShowSidebar]=useState(false);
   const [capituloAtivo,setCapituloAtivo]=useState({titulo:"Capítulo ativo",doutrina:[]});
+  // ── FASE 4: Capítulos ──
+  const capVazio = (n) => ({ id:`cap_${Date.now()}_${n}`, numero:n, titulo:"", texto:"", resumo:"", progresso:0, doutrina:[], juris:[], ts:null, gerando:false });
+  const [capitulos,setCapitulos]=useState(()=>load("jep:caps",[capVazio(1)]));
+  const [capSelId,setCapSelId]=useState(null);
+  const [gerandoCapId,setGerandoCapId]=useState(null);
+  const [gerandoResId,setGerandoResId]=useState(null);
+  const [capEditId,setCapEditId]=useState(null);
+  const [alertasCoer,setAlertasCoer]=useState({});
 
   const botRef=useRef(null);
   const taRef=useRef(null);
@@ -959,6 +1079,8 @@ function App() {
   useEffect(()=>save("jep:nivel",nivel),[nivel]);
   useEffect(()=>save("jep:sessoes",sessoes),[sessoes]);
   useEffect(()=>save("jep:fontes",fontesSalvas),[fontesSalvas]);
+  useEffect(()=>save("jep:caps",capitulos),[capitulos]);
+  useEffect(()=>{ if(capitulos.length>1) setAlertasCoer(verificarCoerencia(capitulos)); },[capitulos]);
   useEffect(()=>botRef.current?.scrollIntoView({behavior:"smooth"}),[msgs,loading,streamText]);
   useEffect(()=>biblioRef.current?.scrollIntoView({behavior:"smooth"}),[biblioResult,biblioStream]);
 
@@ -984,8 +1106,55 @@ function App() {
   const carregarSessao=sess=>{setMsgs(sess.msgs);setHist(sess.hist);setSessaoId(sess.id);setShowSessoes(false);setTab("editor");setToast(`📂 "${sess.nome.slice(0,40)}" carregada`);};
   const novaSessao=()=>{setMsgs([]);setHist([]);setSessaoId(null);setStreamText("");setToast("Nova sessão iniciada");};
 
-  // Geração principal
-  const send=useCallback(async(override)=>{
+  // ── FASE 4: helpers de capítulo ──
+  const atualizarCap = (id, campos) => setCapitulos(cs=>cs.map(c=>c.id===id?{...c,...campos}:c));
+  const adicionarCap = () => {
+    const n = capitulos.length + 1;
+    const novo = capVazio(n);
+    setCapitulos(cs=>[...cs,novo]);
+    setCapSelId(novo.id);
+    setCapEditId(novo.id);
+    setToast(`📖 Capítulo ${n} adicionado`);
+  };
+  const removerCap = (id) => { if(capitulos.length<=1){setToast("⚠️ Mínimo 1 capítulo");return;} setCapitulos(cs=>cs.filter(c=>c.id!==id).map((c,i)=>({...c,numero:i+1}))); setToast("🗑 Capítulo removido"); };
+
+  const gerarCapitulo = useCallback(async(cap) => {
+    const idx = capitulos.findIndex(c=>c.id===cap.id);
+    const anterior = idx>0 ? capitulos[idx-1] : null;
+    setGerandoCapId(cap.id);
+    atualizarCap(cap.id,{gerando:true,texto:""});
+    setTab("editor");
+    const prompt = buildPromptCapitulo(cap, anterior, cap.doutrina.length?cap.doutrina:capituloAtivo.doutrina, cap.juris, area, nivel, p);
+    const sys = buildSys(area, nivel, p);
+    try {
+      let reply = "";
+      await chamarClaudeStream([{role:"user",content:prompt}], sys,
+        partial => { reply=partial; atualizarCap(cap.id,{texto:partial,progresso:calcularProgresso(partial)}); },
+        setStatus
+      );
+      atualizarCap(cap.id,{texto:reply,progresso:calcularProgresso(reply),gerando:false,ts:Date.now()});
+      setHist(h=>[...h,{role:"user",content:prompt},{role:"assistant",content:reply}]);
+      setMsgs(m=>[...m,{role:"user",text:`[Cap. ${cap.numero}] ${cap.titulo}`},{role:"assistant",text:reply,motor:"claude",ts:Date.now()}]);
+      setStatus(""); setToast(`✅ Cap. ${cap.numero} gerado — ${calcularProgresso(reply)}% concluído`);
+    } catch(e) { atualizarCap(cap.id,{gerando:false}); setToast("⚠️ "+e.message); }
+    setGerandoCapId(null);
+  },[capitulos,capituloAtivo,area,nivel,p]);
+
+  const resumirCapitulo = useCallback(async(cap) => {
+    if(!cap.texto?.trim()){setToast("⚠️ Capítulo vazio — gere o texto primeiro");return;}
+    setGerandoResId(cap.id);
+    try {
+      const resumo = await gerarResumoCapitulo(cap.texto, null, setStatus);
+      atualizarCap(cap.id,{resumo});
+      setToast(`✅ Cap. ${cap.numero} resumido em 150 palavras`);
+    } catch(e){setToast("⚠️ "+e.message);}
+    setGerandoResId(null); setStatus("");
+  },[]);
+
+  // Stats Fase 4
+  const totalPalavrasCaps = capitulos.reduce((s,c)=>s+contarPalavrasRaw(c.texto),0);
+  const capsConc = capitulos.filter(c=>c.progresso>=90).length;
+  const capSel = capitulos.find(c=>c.id===capSelId)||null;
     const txt=override!==undefined?String(override).trim():tema.trim();
     if(!txt||loading) return;
     if(motor==="gemini"&&!geminiKey?.trim()){setStatus("❌ Cole a chave Gemini nas configurações.");setTab("editor");return;}
@@ -1081,6 +1250,7 @@ function App() {
         .bib-card:hover{border-color:#c9a84c!important;transform:translateY(-1px);box-shadow:0 3px 10px rgba(0,0,0,.12);}
         .abrir-btn:hover{background:#0f1a33!important;color:white!important;}
         .buscar-btn:hover{background:rgba(201,168,76,.15)!important;}
+        @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.5;}}
       `}</style>
 
       {/* ══ HEADER ══ */}
@@ -1151,10 +1321,11 @@ function App() {
 
       {/* ══ NAV ══ */}
       <div style={{background:CARD,borderBottom:`2px solid ${BORDER}`,display:"flex",alignItems:"stretch",flexShrink:0,overflowX:"auto"}}>
-        {[{id:"inicio",ic:"🏠",l:"Início"},{id:"editor",ic:"✍️",l:"Editor"},{id:"templates",ic:"📌",l:"Templates"},{id:"biblio",ic:"📖",l:"Bibliotecas"},{id:"busca",ic:"🔎",l:"Busca Jur."},{id:"projeto",ic:"📚",l:"Projeto"}].map(t=>(
+        {[{id:"inicio",ic:"🏠",l:"Início"},{id:"editor",ic:"✍️",l:"Editor"},{id:"capitulos",ic:"📖",l:"Capítulos"},{id:"templates",ic:"📌",l:"Templates"},{id:"biblio",ic:"📚",l:"Bibliotecas"},{id:"busca",ic:"🔎",l:"Busca Jur."},{id:"projeto",ic:"🗂",l:"Projeto"}].map(t=>(
           <button key={t.id} className="nav-tab" onClick={()=>setTab(t.id)}
             style={{padding:"8px 14px",border:"none",borderBottom:`3px solid ${tab===t.id?G:"transparent"}`,background:tab===t.id?(darkMode?"rgba(201,168,76,.08)":"#fdfaf4"):CARD,cursor:"pointer",fontSize:11,color:tab===t.id?(darkMode?G:N):TEXT2,fontFamily:"Georgia,serif",fontWeight:tab===t.id?700:400,display:"flex",alignItems:"center",gap:4,transition:"all .12s",marginBottom:-2,whiteSpace:"nowrap",flexShrink:0}}>
             <span>{t.ic}</span>{t.l}
+            {t.id==="capitulos"&&<span style={{fontSize:7,padding:"1px 4px",background:"rgba(124,58,237,.2)",border:"1px solid #7c3aed40",color:"#7c3aed",borderRadius:3,fontFamily:"monospace",marginLeft:2}}>FASE 4</span>}
             {t.id==="biblio"&&<span style={{fontSize:7,padding:"1px 4px",background:"rgba(201,168,76,.2)",border:`1px solid ${G}40`,color:G,borderRadius:3,fontFamily:"monospace",marginLeft:2}}>FASE 3</span>}
           </button>
         ))}
@@ -1356,6 +1527,17 @@ function App() {
                 {["Desenvolver texto completo","Buscar jurisprudência","Avaliação técnica","Continuar texto","Revisar ABNT"].map((a,i)=>(
                   <button key={i} className="ch" onClick={()=>setTema(t=>{const b=t||"[insira o tema]";if(a==="Continuar texto")return `Continue de onde parou:\n\n${b}`;return `${a} sobre: ${b}`;})} style={{fontSize:9.5,fontFamily:"monospace",padding:"3px 8px",border:`1px solid ${BORDER}`,background:"transparent",color:TEXT2,cursor:"pointer",borderRadius:3}}>{a}</button>
                 ))}
+                {/* FASE 4 — Gerar capítulo do tratado */}
+                {capitulos.some(c=>c.titulo.trim())&&(
+                  <div style={{display:"flex",gap:4,alignItems:"center",padding:"2px 8px",background:"rgba(124,58,237,.07)",border:"1px solid #7c3aed30",borderRadius:12}}>
+                    <span style={{fontSize:8,color:"#7c3aed",fontFamily:"monospace",fontWeight:700}}>📖 FASE 4:</span>
+                    <select onChange={e=>{if(e.target.value){const cap=capitulos.find(c=>c.id===e.target.value);if(cap)gerarCapitulo(cap);e.target.value="";}} } defaultValue="" style={{fontSize:9,fontFamily:"monospace",background:"transparent",border:"none",color:"#7c3aed",cursor:"pointer",outline:"none"}}>
+                      <option value="" disabled>Gerar capítulo…</option>
+                      {capitulos.filter(c=>c.titulo.trim()).map((c,i)=><option key={c.id} value={c.id} disabled={i>0&&capitulos[i-1].progresso<90}>{i>0&&capitulos[i-1].progresso<90?"🔒 ":""}Cap. {c.numero}: {c.titulo.slice(0,30)}</option>)}
+                    </select>
+                  </div>
+                )}
+                <button onClick={()=>setTab("capitulos")} style={{fontSize:9.5,fontFamily:"monospace",padding:"3px 8px",border:"1px solid #7c3aed40",background:"rgba(124,58,237,.07)",color:"#7c3aed",cursor:"pointer",borderRadius:3}}>📖 Capítulos</button>
                 {/* Botão Sidebar Doutrina */}
                 <button onClick={()=>setShowSidebar(s=>!s)}
                   style={{fontSize:9.5,fontFamily:"monospace",padding:"3px 8px",border:`1px solid ${showSidebar?"#7c3aed":BORDER}`,background:showSidebar?"rgba(124,58,237,.12)":"transparent",color:showSidebar?"#7c3aed":TEXT2,cursor:"pointer",borderRadius:3,transition:"all .15s"}}>
@@ -1382,6 +1564,236 @@ function App() {
                 darkMode={darkMode}
                 areaJuridica={area}
               />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ══════════ CAPÍTULOS — FASE 4 ══════════ */}
+      {tab==="capitulos"&&(
+        <div style={{flex:1,overflowY:"auto",padding:"18px 22px"}}>
+          {/* Header */}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16,flexWrap:"wrap",gap:10}}>
+            <div>
+              <div style={{fontSize:8,color:TEXT2,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:".13em",marginBottom:4}}>Fase 4 — Escrita Capítulo por Capítulo</div>
+              <div style={{fontSize:14,fontWeight:700,color:N}}>📖 Gerenciador de Capítulos</div>
+              <div style={{fontSize:10,color:TEXT2,marginTop:3}}>Prompt encadeado · resumo automático · validação de coerência · notas ABNT</div>
+            </div>
+            <button onClick={adicionarCap} style={{padding:"9px 18px",background:"#7c3aed",color:"white",border:"none",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700,whiteSpace:"nowrap"}}>+ Novo Capítulo</button>
+          </div>
+
+          {/* Stats */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:16}}>
+            {[
+              {l:"Total de Capítulos",v:capitulos.length,u:"planejados"},
+              {l:"Concluídos (≥90%)",v:capsConc,u:`de ${capitulos.length}`},
+              {l:"Palavras escritas",v:totalPalavrasCaps.toLocaleString("pt-BR"),u:"no tratado"},
+              {l:"Alertas de Repetição",v:Object.values(alertasCoer).filter(v=>v>0).length,u:"capítulos",alerta:Object.values(alertasCoer).filter(v=>v>0).length>0},
+            ].map((k,i)=>(
+              <div key={i} style={{background:CARD,border:`1px solid ${k.alerta?"#b91c1c":BORDER}`,borderRadius:8,padding:"11px 13px",position:"relative",overflow:"hidden"}}>
+                {k.alerta&&<div style={{position:"absolute",top:0,left:0,right:0,height:2,background:"#b91c1c"}}/>}
+                <div style={{fontSize:8,color:k.alerta?"#b91c1c":TEXT2,fontFamily:"monospace",marginBottom:4,textTransform:"uppercase",letterSpacing:".07em"}}>{k.l}</div>
+                <div style={{fontSize:20,fontWeight:700,color:k.alerta?"#b91c1c":N,lineHeight:1}}>{k.v}</div>
+                <div style={{fontSize:9,color:TEXT2,marginTop:3}}>{k.u}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Barra de progresso geral */}
+          {capitulos.length>0&&(
+            <div style={{background:CARD,border:`1px solid ${BORDER}`,borderRadius:8,padding:"12px 16px",marginBottom:16}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <span style={{fontSize:11,color:N,fontWeight:700}}>Progresso Geral do Tratado</span>
+                <span style={{fontSize:12,color:G,fontFamily:"monospace",fontWeight:700}}>{Math.round(capitulos.reduce((s,c)=>s+c.progresso,0)/capitulos.length)}%</span>
+              </div>
+              <div style={{height:6,background:BORDER,borderRadius:3,overflow:"hidden"}}>
+                <div style={{height:"100%",width:`${Math.round(capitulos.reduce((s,c)=>s+c.progresso,0)/capitulos.length)}%`,background:"linear-gradient(90deg,#7c3aed,#c9a84c)",borderRadius:3,transition:"width .6s"}}/>
+              </div>
+              <div style={{display:"flex",gap:4,marginTop:8,flexWrap:"wrap"}}>
+                {capitulos.map(c=>(
+                  <div key={c.id} title={`Cap. ${c.numero}: ${c.titulo||"sem título"} — ${c.progresso}%`}
+                    style={{width:24,height:8,borderRadius:2,background:c.progresso>=90?"#16a34a":c.progresso>0?"#c9a84c":BORDER,cursor:"pointer",transition:"all .2s",border:capSelId===c.id?"2px solid #7c3aed":"1px solid transparent"}}
+                    onClick={()=>setCapSelId(c.id)}/>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Lista de capítulos */}
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {capitulos.map((cap,idx)=>{
+              const anterior = idx>0?capitulos[idx-1]:null;
+              const podeGerar = idx===0 || (anterior?.progresso||0)>=90;
+              const estaSelecionado = capSelId===cap.id;
+              const estaGerando = gerandoCapId===cap.id;
+              const estaResumindo = gerandoResId===cap.id;
+              const simAlerta = alertasCoer[cap.id]||0;
+              const corProg = cap.progresso>=90?"#16a34a":cap.progresso>0?"#c9a84c":BORDER;
+              const cor = "#7c3aed";
+
+              return (
+                <div key={cap.id} style={{background:CARD,border:`2px solid ${estaSelecionado?cor:BORDER}`,borderRadius:10,overflow:"hidden",transition:"all .15s"}}>
+                  {/* Barra de cor topo */}
+                  <div style={{height:3,background:`linear-gradient(90deg,${cor},${corProg})`,width:`${Math.max(2,cap.progresso)}%`,transition:"width .6s"}}/>
+                  
+                  <div style={{padding:"13px 16px"}}>
+                    <div style={{display:"flex",alignItems:"flex-start",gap:10}}>
+                      {/* Número */}
+                      <div style={{width:36,height:36,borderRadius:8,background:cap.progresso>=90?"rgba(22,163,74,.12)":cap.progresso>0?"rgba(201,168,76,.12)":"rgba(124,58,237,.08)",border:`1px solid ${cap.progresso>=90?"rgba(22,163,74,.3)":cap.progresso>0?`${G}40`:"#7c3aed30"}`,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,fontSize:14,color:cap.progresso>=90?"#16a34a":cap.progresso>0?G:"#7c3aed",flexShrink:0}}>
+                        {cap.progresso>=90?"✓":cap.numero}
+                      </div>
+
+                      {/* Título editável */}
+                      <div style={{flex:1,minWidth:0}}>
+                        {capEditId===cap.id?(
+                          <input autoFocus value={cap.titulo}
+                            onChange={e=>atualizarCap(cap.id,{titulo:e.target.value})}
+                            onBlur={()=>setCapEditId(null)}
+                            onKeyDown={e=>{if(e.key==="Enter"||e.key==="Escape")setCapEditId(null);}}
+                            placeholder={`Título do Capítulo ${cap.numero}`}
+                            style={{width:"100%",padding:"4px 8px",border:`1px solid ${G}`,borderRadius:4,fontFamily:"Georgia,serif",fontSize:13,fontWeight:700,background:darkMode?"#1a2744":"#fdfaf4",color:N,outline:"none"}}/>
+                        ):(
+                          <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
+                            <span style={{fontSize:13,fontWeight:700,color:N,cursor:"pointer",flex:1}} onClick={()=>setCapEditId(cap.id)}>
+                              {cap.titulo||<span style={{color:TEXT2,fontStyle:"italic"}}>Clique para titular o capítulo {cap.numero}</span>}
+                            </span>
+                            <button onClick={()=>setCapEditId(cap.id)} style={{background:"transparent",border:"none",color:TEXT2,cursor:"pointer",fontSize:12,padding:"2px 4px",flexShrink:0}}>✏️</button>
+                          </div>
+                        )}
+                        <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+                          {/* Progress */}
+                          <span style={{fontSize:9,padding:"1px 7px",background:`${corProg}15`,border:`1px solid ${corProg}40`,color:corProg,borderRadius:10,fontFamily:"monospace",fontWeight:700}}>
+                            {cap.progresso}% · {contarPalavrasRaw(cap.texto).toLocaleString("pt-BR")} palavras
+                          </span>
+                          {/* Notas */}
+                          {cap.texto&&<span style={{fontSize:9,color:TEXT2,fontFamily:"monospace"}}>{contarNotas(cap.texto)} notas</span>}
+                          {/* Resumo */}
+                          {cap.resumo&&<span style={{fontSize:9,padding:"1px 6px",background:"rgba(34,197,94,.1)",border:"1px solid rgba(34,197,94,.3)",color:"#16a34a",borderRadius:10,fontFamily:"monospace"}}>📝 resumido</span>}
+                          {/* Alerta coerência */}
+                          {simAlerta>0&&<span style={{fontSize:9,padding:"1px 7px",background:"rgba(185,28,28,.1)",border:"1px solid rgba(185,28,28,.3)",color:"#b91c1c",borderRadius:10,fontFamily:"monospace",fontWeight:700}} title={`Similaridade com cap. anterior: ${(simAlerta*100).toFixed(0)}% — pode haver repetição`}>⚠️ Repetição detectada ({(simAlerta*100).toFixed(0)}%)</span>}
+                          {/* Geração bloqueada */}
+                          {!podeGerar&&<span style={{fontSize:9,color:TEXT2,fontFamily:"monospace"}}>🔒 Aguardando Cap. {cap.numero-1} (≥90%)</span>}
+                        </div>
+                      </div>
+
+                      {/* Ações rápidas */}
+                      <div style={{display:"flex",gap:5,flexShrink:0,alignItems:"center"}}>
+                        {cap.texto&&(
+                          <button onClick={()=>{setTema(`[Cap. ${cap.numero}] ${cap.titulo}`);setProblema(cap.texto.slice(0,500));setTab("editor");}}
+                            style={{padding:"5px 9px",border:`1px solid ${BORDER}`,background:"transparent",color:TEXT2,borderRadius:4,cursor:"pointer",fontSize:10,fontFamily:"monospace"}}>👁 Ver</button>
+                        )}
+                        <button onClick={()=>removerCap(cap.id)}
+                          style={{padding:"5px 7px",border:"1px solid #fca5a5",background:"transparent",color:"#b91c1c",borderRadius:4,cursor:"pointer",fontSize:11}}>🗑</button>
+                      </div>
+                    </div>
+
+                    {/* Barra de progresso */}
+                    <div style={{margin:"10px 0 10px 46px"}}>
+                      <div style={{height:4,background:BORDER,borderRadius:2,overflow:"hidden"}}>
+                        <div style={{height:"100%",width:`${cap.progresso}%`,background:cap.progresso>=90?"linear-gradient(90deg,#4ade80,#16a34a)":cap.progresso>0?"linear-gradient(90deg,#c9a84c,#d4af37)":"transparent",borderRadius:2,transition:"width .6s"}}/>
+                      </div>
+                      <div style={{display:"flex",justifyContent:"space-between",marginTop:3}}>
+                        <span style={{fontSize:8,color:TEXT2,fontFamily:"monospace"}}>0</span>
+                        <span style={{fontSize:8,color:TEXT2,fontFamily:"monospace"}}>Meta: {PALAVRAS_ALVO_CAP.toLocaleString("pt-BR")} palavras</span>
+                      </div>
+                    </div>
+
+                    {/* Botões principais */}
+                    <div style={{display:"flex",gap:7,flexWrap:"wrap",paddingLeft:46}}>
+                      {/* BOTÃO GERAR CAPÍTULO — 4.1 */}
+                      <button
+                        onClick={()=>{ if(cap.titulo.trim()) gerarCapitulo(cap); else { setCapEditId(cap.id); setToast("⚠️ Defina o título antes de gerar"); } }}
+                        disabled={!podeGerar||estaGerando||!!gerandoCapId}
+                        style={{padding:"7px 16px",background:!podeGerar||estaGerando||!!gerandoCapId?"#d4cfc6":(darkMode?"#1a2744":"#0f1a33"),color:!podeGerar||estaGerando||!!gerandoCapId?TEXT2:G,border:`1px solid ${!podeGerar||estaGerando?"#d4cfc6":G}`,borderRadius:5,cursor:!podeGerar||estaGerando||!!gerandoCapId?"not-allowed":"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700,transition:"all .2s",display:"flex",alignItems:"center",gap:6}}>
+                        {estaGerando
+                          ? <><div style={{width:10,height:10,borderRadius:"50%",border:`2px solid ${G}`,borderTopColor:"transparent",animation:"spin 1s linear infinite"}}/> Gerando Cap. {cap.numero}…</>
+                          : <>⚖️ Gerar Capítulo {cap.numero}</>
+                        }
+                      </button>
+
+                      {/* RESUMIR — 4.3 */}
+                      <button onClick={()=>resumirCapitulo(cap)} disabled={!cap.texto?.trim()||estaResumindo}
+                        style={{padding:"7px 14px",background:"transparent",border:`1px solid ${!cap.texto?"#d4cfc6":BORDER}`,color:!cap.texto?TEXT2:N,borderRadius:5,cursor:!cap.texto||estaResumindo?"not-allowed":"pointer",fontSize:11,fontFamily:"monospace",transition:"all .2s",display:"flex",alignItems:"center",gap:5}}>
+                        {estaResumindo?<><div style={{width:8,height:8,borderRadius:"50%",border:`2px solid ${G}`,borderTopColor:"transparent",animation:"spin 1s linear infinite"}}/> Resumindo…</>:"📝 Resumir"}
+                      </button>
+
+                      {/* EXPORTAR */}
+                      {cap.texto&&(
+                        <>
+                          <button onClick={()=>gerarDocx(cap.texto,`Cap${cap.numero}_${cap.titulo}`,p)}
+                            style={{padding:"7px 12px",background:"#8b1a1a",color:"white",border:"none",borderRadius:5,cursor:"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700}}>⬇ .docx</button>
+                          <button onClick={()=>exportarMarkdown(cap.texto,`Cap${cap.numero}_${cap.titulo}`)}
+                            style={{padding:"7px 12px",background:"transparent",border:`1px solid ${G}`,color:G,borderRadius:5,cursor:"pointer",fontSize:11,fontFamily:"monospace"}}>⬇ .md</button>
+                        </>
+                      )}
+
+                      {/* Importar doutrina deste capítulo */}
+                      <button onClick={()=>{setCapituloAtivo({titulo:`Cap. ${cap.numero}: ${cap.titulo}`,doutrina:cap.doutrina});setShowSidebar(true);setTab("editor");setToast(`📚 Importando doutrina para Cap. ${cap.numero}`);}}
+                        style={{padding:"7px 12px",background:"rgba(124,58,237,.08)",border:"1px solid #7c3aed40",color:"#7c3aed",borderRadius:5,cursor:"pointer",fontSize:11,fontFamily:"monospace"}}>📚 Doutrina</button>
+                    </div>
+
+                    {/* Resumo (se existir) */}
+                    {cap.resumo&&(
+                      <div style={{marginTop:10,marginLeft:46,padding:"9px 12px",background:darkMode?"#0a1628":"#fdfaf4",border:`1px solid ${G}30`,borderRadius:6}}>
+                        <div style={{fontSize:8,color:G,fontFamily:"monospace",marginBottom:5,textTransform:"uppercase",letterSpacing:".07em"}}>📝 Resumo automático · 150 palavras · será usado como contexto para Cap. {cap.numero+1}</div>
+                        <div style={{fontSize:11,color:N,lineHeight:1.7}}>{cap.resumo}</div>
+                      </div>
+                    )}
+
+                    {/* Preview do texto */}
+                    {cap.texto&&!estaGerando&&(
+                      <div style={{marginTop:8,marginLeft:46,fontSize:10,color:TEXT2,lineHeight:1.6,fontStyle:"italic",borderLeft:`2px solid ${BORDER}`,paddingLeft:10}}>
+                        {cap.texto.replace(/\*\*/g,"").replace(/\n+/g," ").slice(0,200)}…
+                      </div>
+                    )}
+
+                    {/* Geração em andamento */}
+                    {estaGerando&&(
+                      <div style={{marginTop:8,marginLeft:46,fontSize:10,color:G,fontFamily:"monospace",animation:"pulse 1.5s infinite"}}>
+                        ⚖️ Claude Sonnet 4 escrevendo Cap. {cap.numero} em tempo real… {contarPalavrasRaw(cap.texto).toLocaleString("pt-BR")} palavras geradas
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Gerar todos os capítulos possíveis */}
+          {capitulos.some(c=>c.progresso<90&&c.titulo.trim())&&(
+            <div style={{marginTop:16,padding:"12px 16px",background:`linear-gradient(135deg,${darkMode?"#0a1628":"#fdfaf4"},${darkMode?"#111827":"white"})`,border:`1px solid ${G}40`,borderRadius:8,display:"flex",gap:12,alignItems:"center"}}>
+              <div style={{fontSize:20}}>⚡</div>
+              <div style={{flex:1}}>
+                <div style={{fontSize:11,fontWeight:700,color:N,marginBottom:2}}>Gerar todos os capítulos em sequência</div>
+                <div style={{fontSize:10,color:TEXT2}}>Cada capítulo será resumido automaticamente antes de gerar o próximo, garantindo coerência narrativa.</div>
+              </div>
+              <button
+                onClick={async()=>{
+                  for(const cap of capitulos){
+                    if(cap.progresso>=90) continue;
+                    if(!cap.titulo.trim()){setToast(`⚠️ Cap. ${cap.numero} sem título — pulado`);continue;}
+                    const idx=capitulos.findIndex(c=>c.id===cap.id);
+                    const anterior=idx>0?capitulos[idx-1]:null;
+                    if(anterior&&anterior.progresso<90){setToast(`🔒 Cap. ${cap.numero} aguarda Cap. ${anterior.numero}`);break;}
+                    await gerarCapitulo(cap);
+                    if(anterior?.texto&&!anterior?.resumo) await resumirCapitulo(anterior);
+                  }
+                  setToast("✅ Sequência concluída!");
+                }}
+                disabled={!!gerandoCapId}
+                style={{padding:"9px 18px",background:gerandoCapId?(darkMode?"#1e2d45":"#d4cfc6"):"#7c3aed",color:gerandoCapId?TEXT2:"white",border:"none",borderRadius:6,cursor:gerandoCapId?"not-allowed":"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700,whiteSpace:"nowrap"}}>
+                {gerandoCapId?"⏳ Gerando...":"▶ Gerar Sequência →"}
+              </button>
+            </div>
+          )}
+
+          {/* Bloco de referências unificado */}
+          {capitulos.some(c=>c.doutrina?.length>0)&&(
+            <div style={{marginTop:16,background:CARD,border:`1px solid ${BORDER}`,borderRadius:8,padding:"12px 16px"}}>
+              <div style={{fontSize:11,fontWeight:700,color:N,marginBottom:8}}>📋 Referências ABNT unificadas do tratado</div>
+              <div style={{fontSize:10,color:TEXT2,lineHeight:1.8,fontFamily:"monospace",whiteSpace:"pre-wrap",maxHeight:200,overflowY:"auto"}}>
+                {abntGerarListaReferencias(capitulos.flatMap(c=>c.doutrina||[]))}
+              </div>
             </div>
           )}
         </div>
