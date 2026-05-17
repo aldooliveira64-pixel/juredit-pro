@@ -805,40 +805,230 @@ const TEMPLATES = [
 function buildSys(area, nivel, proj) {
   return `Você é JurEditPro Excellence — redator jurídico de máximo padrão acadêmico.
 PROJETO: "${proj?.nome||""}" | ÁREA: ${area} | NÍVEL: ${nivel}
-REFERÊNCIA DE ESTILO: ${proj?.autores||"Marinoni, Di Pietro, Celso Antônio Bandeira de Mello, Didier Jr."}
+REFERÊNCIA DE ESTILO: ${proj?.autores||"Luís Roberto Barroso, Di Pietro, Celso Antônio Bandeira de Mello, Marinoni"}
 
-══ PADRÃO TIPOGRÁFICO OBRIGATÓRIO ══
+══ PADRÃO TIPOGRÁFICO — MODELO MALHEIROS/SARAIVA ══
 • Times New Roman 12pt · ABNT 2024 · entrelinhas 1,5 · recuo de primeira linha 1,25cm
-• Seções em **negrito sem numeração arábica** — ex: **Conceito e Natureza Jurídica**
-• Notas de rodapé: superscript ¹²³ COLADO à palavra — ex: Di Pietro¹ sustenta
-• Citações em bloco: > *EMENTA: texto. (STJ, REsp X/UF, Rel. Min. Nome, Nª Turma, DJe data.)*
-• Voz impessoal: "cumpre observar", "não se pode olvidar", "é de se notar", "destarte"
-• Doutrina integrada: "MARINONI, em *Teoria Geral do Processo*¹, sustenta que..."
+• Seções numeradas em itálico integradas ao fluxo: *1. Conceito e Natureza Jurídica*
+• Subseções como transição natural de parágrafo — NUNCA como cabeçalho destacado
+• Notas de rodapé: superscript ¹ COLADO à palavra — ex: Barroso¹ sustenta
+• Doutrina integrada: "Na lição de MARINONI², a tutela jurisdicional..."
+• Voz impessoal: "cumpre observar", "não se pode olvidar", "destarte", "é de ver-se"
+
+══ REGRA ABSOLUTA — JURISPRUDÊNCIA INTEGRADA ══
+✗ NUNCA criar bloco ou seção separada de jurisprudência com título próprio
+✗ NUNCA usar "> *EMENTA:*" ou "§ Contexto / § Ratio / § Impacto" como blocos
+✓ Citar no próprio parágrafo como argumento de autoridade:
+  "O Supremo Tribunal Federal, ao apreciar a matéria, assentou que a norma em
+   questão possui eficácia plena¹, afastando, por conseguinte, a necessidade de
+   regulamentação infraconstitucional para sua aplicabilidade imediata."
+✓ Ementa resumida pode ir em nota de rodapé — nunca no corpo principal
+✓ Vários precedentes podem ser citados em sequência no mesmo parágrafo
+
+══ REGRA ABSOLUTA — SUMÁRIO / SEÇÕES ══
+✗ NUNCA criar capítulo ou subitem específico só para jurisprudência
+✗ NUNCA criar seção "Análise Jurisprudencial" separada
+✓ Seções numeradas em itálico: *1. Conceito* / *2. Regime Jurídico* / *3. Efeitos*
+✓ Jurisprudência e doutrina distribuídas naturalmente em cada seção temática
 
 ══ INTEGRIDADE ACADÊMICA ABSOLUTA ══
 ✗ NUNCA invente número de processo, relator, data, ementa ou página de obra
-✓ Se em dúvida sobre dado → omita a referência específica, não invente
-
-══ REGRAS DE OURO ══
-✓ NUNCA corte o texto — entregue COMPLETO de uma vez
-✓ NUNCA faça perguntas — redija diretamente
-✓ Mínimo 25 notas (capítulos) · 15 (artigos) · 12 (pareceres)
-✓ Seção ② NOTAS DE RODAPÉ ao final com TODAS as notas
-✓ Padrão máximo de densidade argumentativa e desenvolvimento doutrinário`;
+✓ Se não souber o número exato → "a jurisprudência dominante do STJ assentou que..."
+✓ Só cite números de processo que tiver certeza — omita se não tiver`;
 }
 
 function buildPrompt(tipo, problema, tema, area, nivel, proj) {
-  const ctx = problema ? `\n══ PROBLEMA / CONTEXTO FORNECIDO ══\n${problema}\n\n` : "";
-  const h = `${ctx}Área: ${area} | Nível: ${nivel} | Projeto: "${proj?.nome||""}"\n\n`;
+  const ctx = problema ? `\n══ CONTEXTO / PROBLEMA JURÍDICO FORNECIDO ══\n${problema}\n[Este contexto deve ser o fio condutor de todo o desenvolvimento]\n` : "";
+  const h = `${ctx}\nÁrea: ${area} | Nível: ${nivel} | Projeto: "${proj?.nome||""}"\n\n`;
+
   const ps = {
-    livro:`${h}TEMA: ${tema}\n\nGere capítulo COMPLETO de tratado jurídico acadêmico.\n\nESTRUTURA OBRIGATÓRIA:\nTÍTULO DO CAPÍTULO EM CAIXA ALTA\nEMENTA_CAP: [subtemas]\n---\n\n**Abertura — Contextualização e Problema Central**\n[3 parágrafos]\n\n**Conceito, Natureza Jurídica e Delimitação Dogmática**\n[4+ parágrafos com notas ¹²³]\n\n**Regime Jurídico: Requisitos, Elementos e Efeitos**\n[4+ parágrafos · legislação vigente]\n\n**Análise Jurisprudencial STJ e STF (2020–2025)**\n> *EMENTA: [resumo]. (STJ, REsp X.XXX/UF, Rel. Min. Nome, Nª Turma, DJe DD.MM.AAAA.)*\n[Mínimo 4 precedentes]\n\n**Controvérsias Doutrinárias e Tendências 2025**\n[3+ parágrafos]\n\nSíntese do Capítulo\n[3 parágrafos]\n\n② NOTAS DE RODAPÉ\n¹ Prenome Sobrenome, *Título*, N. ed., Cidade, Editora, ano, p. XX.\n[MÍNIMO 25 NOTAS]`,
-    sumario:`${h}OBRA: ${tema}\n\nGere SUMÁRIO COMPLETO com numeração ABNT (1/1.1/1.1.1), mínimo 10 capítulos, páginas estimadas ponteadas: 1.1 Conceito......................15`,
-    parecer:`${h}QUESTÃO JURÍDICA: ${tema}\n\nElabore PARECER JURÍDICO COMPLETO.\n\nEMENTA\n[5-8 linhas]\n\nI — RELATÓRIO\nII — FUNDAMENTAÇÃO JURÍDICA\n**1. Análise do Quadro Normativo**\n**2. Posicionamento Doutrinário**\n**3. Jurisprudência dos Tribunais Superiores**\n**4. Síntese e Conclusão Fundamentada**\n\nIII — CONCLUSÃO\n[Respostas numeradas]\n\n② NOTAS DE RODAPÉ [mínimo 20]`,
-    peticao:`${h}OBJETO DA AÇÃO: ${tema}\n\nRedije PETIÇÃO JURÍDICA COMPLETA.\n\nEXCELENTÍSSIMO SENHOR DOUTOR JUIZ DE DIREITO...\n\nI — DOS FATOS\nII — DO DIREITO\n**1. Da Legitimidade e Interesse de Agir**\n**2. Do Mérito — Fundamento Legal**\n**3. Da Jurisprudência Aplicável**\n\nIII — DOS PEDIDOS\n\n② NOTAS DE RODAPÉ [mínimo 15]`,
-    artigo:`${h}TEMA: ${tema}\n\nEscreva ARTIGO CIENTÍFICO JURÍDICO COMPLETO (Qualis A2 CAPES).\n\nTÍTULO EM MAIÚSCULAS\nResumo [150-250 palavras]\nPalavras-chave: [5-7]\nAbstract / Keywords\n1 INTRODUÇÃO\n2 [DESENVOLVIMENTO]\n3 CONSIDERAÇÕES FINAIS\nREFERÊNCIAS [ABNT NBR 6023:2018 — mínimo 20]\n\n② NOTAS DE RODAPÉ`,
-    apostila:`${h}TEMA: ${tema}\n\nCrie APOSTILA JURÍDICA DIDÁTICA COMPLETA com módulos, jurisprudência comentada, exercícios e gabarito.`,
-    ementa:`${h}OBJETO: ${tema}\n\nRedije EMENTA JURÍDICA técnica (modelo STJ) — parágrafo único, máximo 15 linhas.`,
-    contrato:`${h}OBJETO: ${tema}\n\nElabore MINUTA CONTRATUAL COMPLETA com cláusulas de objeto, obrigações, prazo, valor, rescisão, penalidades e foro.`,
+    livro:`${h}TEMA: ${tema}
+
+Escreva um capítulo de tratado jurídico acadêmico seguindo RIGOROSAMENTE o padrão tipográfico da editora Malheiros/Saraiva (modelo Luís Roberto Barroso, Interpretação e Aplicação da Constituição).
+
+══ ESTRUTURA OBRIGATÓRIA ══
+
+CAPÍTULO [N]
+TÍTULO DO CAPÍTULO EM CAIXA ALTA E NEGRITO
+
+[Ementa em itálico imediatamente abaixo do título — lista compacta dos subtemas, separados por ponto, em itálico, alinhada à direita ou centralizada, como na foto de referência]
+
+[Corpo do texto — mínimo 4.000 palavras — organizado assim:]
+
+*1. Subtítulo da Primeira Seção em Itálico*
+
+   [Parágrafos contínuos com recuo de primeira linha. A jurisprudência NÃO forma bloco separado — ela é citada dentro do parágrafo como argumento de autoridade. Exemplo de como deve ser feito:
+
+   "O princípio da legalidade administrativa, consagrado no art. 37, caput, da Constituição Federal, exige que toda atuação do Poder Público encontre fundamento em lei. Nesse sentido, o Supremo Tribunal Federal, ao julgar o RE 633.703/MG¹, reafirmou a orientação segundo a qual o administrador não pode fazer senão o que a lei expressamente autoriza, distinguindo-se, assim, da esfera privada, em que é lícito tudo quanto a lei não proíbe. Na doutrina, DI PIETRO² sustenta que o princípio assume dupla dimensão: negativa, ao impedir o ato contrário à lei, e positiva, ao exigir fundamento legal para qualquer restrição de direitos."]
+
+*2. Subtítulo da Segunda Seção em Itálico*
+
+   [Continua o desenvolvimento. Quando houver posições doutrinárias divergentes, elas são apresentadas no próprio texto: "Parte da doutrina, com BANDEIRA DE MELLO³, sustenta que... Em sentido diverso, MARÇAL JUSTEN FILHO⁴ defende..." — sempre dentro do parágrafo, sem criar seção de "divergência doutrinária".]
+
+*3. Subtítulo da Terceira Seção em Itálico*
+
+   [Se houver mais precedentes relevantes, citá-los no parágrafo em que o argumento se encaixa, não em bloco separado.]
+
+[Continue com quantas seções o tema exigir — mínimo 4 seções — sem criar seção específica de "Jurisprudência" ou "Análise Jurisprudencial"]
+
+② NOTAS DE RODAPÉ
+¹ [STF/STJ, tipo de ação número/UF, Rel. Min. Nome, Órgão, data de julgamento. Ementa: "fragmento da ementa em até 2 linhas".]
+² Prenome SOBRENOME, *Título da Obra*, N. ed., Cidade: Editora, ano, p. XX.
+[MÍNIMO 20 NOTAS — misture doutrina (com página) e jurisprudência (com ementa breve)]
+
+REGRAS ABSOLUTAS:
+✗ NUNCA crie seção separada de jurisprudência ou bloco "> *EMENTA:*"
+✗ NUNCA use **negrito** para títulos de seção — use *itálico numerado*
+✗ NUNCA invente número de processo ou página de obra
+✓ Entregue COMPLETO de uma vez — nunca truncar`,
+
+    sumario:`${h}OBRA: ${tema}
+
+Gere SUMÁRIO COMPLETO no padrão MALHEIROS/SARAIVA.
+
+REGRAS:
+• Numeração: Capítulo I, II, III (romano) — seções: 1, 2, 3 (arábico em itálico)
+• Subseções: 1.1, 1.2 — apenas quando imprescindível
+• Títulos REAIS e ESPECÍFICOS ao conteúdo
+• Páginas estimadas ponteadas: 1. *Conceito*.....................................15
+• Não há capítulos de "Jurisprudência" — ela é integrada ao desenvolvimento
+• Seções pré-textuais (Apresentação, Sumário) e pós-textuais (Referências)
+• Mínimo 8 capítulos · 4-5 seções por capítulo`,
+
+    parecer:`${h}QUESTÃO JURÍDICA: ${tema}
+
+Elabore PARECER JURÍDICO COMPLETO no padrão acadêmico.
+
+EMENTA
+[5-8 linhas em maiúsculas — síntese técnica do objeto e da conclusão]
+
+I — RELATÓRIO
+[Qualificação do consulente · objeto da consulta · documentos · questão a responder]
+
+II — ANÁLISE JURÍDICA
+
+*1. Quadro Normativo Aplicável*
+[Texto contínuo — legislação citada dentro dos parágrafos, não em lista]
+
+*2. Posicionamento Doutrinário*
+[Texto contínuo — autores citados em nota de rodapé, com integração argumentativa]
+
+*3. Orientação Jurisprudencial*
+[INTEGRADA ao texto — "O STJ, em reiteradas decisões¹, tem assentado que..." — sem bloco separado]
+
+*4. Síntese e Conclusão Fundamentada*
+[Resposta à questão com fundamentos]
+
+III — CONCLUSÃO
+[Respostas objetivas numeradas · recomendações]
+
+② NOTAS DE RODAPÉ [mínimo 15]`,
+
+    peticao:`${h}OBJETO DA AÇÃO: ${tema}
+
+Redije PETIÇÃO JURÍDICA COMPLETA no padrão forense.
+
+EXCELENTÍSSIMO SENHOR DOUTOR JUIZ DE DIREITO DA [VARA] DA COMARCA DE [CIDADE] — ESTADO DE [UF]
+
+[Qualificação das partes]
+
+I — DOS FATOS
+[Narrativa clara e cronológica]
+
+II — DO DIREITO
+
+*1. Da Legitimidade e Interesse Processual*
+[Texto corrido com fundamento legal integrado]
+
+*2. Do Mérito*
+[Texto corrido — jurisprudência citada dentro do argumento: "Como assentou o STJ, ao julgar o REsp X¹..." — sem bloco separado]
+
+*3. Da Tutela Requerida*
+[Fundamento do pedido principal]
+
+III — DOS PEDIDOS
+[Numerados, objetivos]
+
+② NOTAS DE RODAPÉ [mínimo 12]`,
+
+    artigo:`${h}TEMA: ${tema}
+
+Escreva ARTIGO CIENTÍFICO JURÍDICO COMPLETO — padrão Qualis A2 CAPES.
+
+TÍTULO EM MAIÚSCULAS
+Resumo: [150-250 palavras]
+Palavras-chave: [5-7 termos]
+Abstract: [tradução do resumo]
+Keywords: [tradução das palavras-chave]
+
+*1. Introdução*
+[Problema de pesquisa, hipótese, metodologia, estrutura do artigo]
+
+*2. [Desenvolvimento — seção principal]*
+
+*2.1 [Subseção se necessário]*
+
+*3. [Segunda seção de desenvolvimento]*
+
+*4. Considerações Finais*
+[Conclusão que responde à hipótese inicial]
+
+REFERÊNCIAS
+[ABNT NBR 6023:2018 — mínimo 20 referências]
+
+② NOTAS DE RODAPÉ
+[Notas de rodapé ao longo do texto — doutrina e jurisprudência integradas]`,
+
+    apostila:`${h}TEMA: ${tema}
+
+Crie APOSTILA JURÍDICA DIDÁTICA COMPLETA.
+
+APRESENTAÇÃO
+OBJETIVOS DE APRENDIZAGEM [6-8 itens]
+
+*1. [Módulo — Fundamentos]*
+[Texto didático com conceitos explicados de forma acessível]
+
+*2. [Módulo — Desenvolvimento]*
+[Aprofundamento com exemplos práticos]
+
+*3. [Módulo — Aplicação e Casos]*
+[Situações concretas — jurisprudência citada dentro do texto explicativo]
+
+QUESTÕES PARA REFLEXÃO [10 questões dissertativas]
+GABARITO COMENTADO
+REFERÊNCIAS`,
+
+    ementa:`${h}OBJETO: ${tema}
+
+Redije EMENTA JURÍDICA técnica — modelo dos tribunais superiores brasileiros.
+
+FORMATO:
+[ÁREA DO DIREITO. Subtema. Questão jurídica debatida. Tese fixada. Dispositivos normativos aplicados. Resultado do julgamento.]
+
+• Parágrafo único, em maiúsculas
+• Máximo 12 linhas
+• Linguagem técnica e objetiva`,
+
+    contrato:`${h}OBJETO: ${tema}
+
+Elabore MINUTA CONTRATUAL COMPLETA — linguagem técnico-jurídica.
+
+CONTRATO DE [OBJETO]
+
+As partes [qualificação], têm entre si justo e contratado o seguinte:
+
+CLÁUSULA PRIMEIRA — DO OBJETO E ESCOPO
+[Texto corrido definindo o objeto com precisão]
+
+CLÁUSULA SEGUNDA — DAS OBRIGAÇÕES DAS PARTES
+[Obrigações de cada parte descritas em texto corrido]
+
+CLÁUSULA TERCEIRA — DO PRAZO E VIGÊNCIA
+CLÁUSULA QUARTA — DO PREÇO E FORMA DE PAGAMENTO
+CLÁUSULA QUINTA — DA RESCISÃO E RESOLUÇÃO
+CLÁUSULA SEXTA — DAS PENALIDADES E MULTAS
+CLÁUSULA SÉTIMA — DO FORO`,
   };
   return ps[tipo]||ps.livro;
 }
@@ -899,59 +1089,67 @@ function verificarCoerencia(capitulos) {
 // 4.2 — Prompt template encadeado com contexto do capítulo anterior
 function buildPromptCapitulo(cap, capAnterior, doutrina, juris, area, nivel, proj) {
   const resumoCtx = capAnterior?.resumo
-    ? `\n\n══ RESUMO DO CAPÍTULO ANTERIOR (Cap. ${capAnterior.numero} — ${capAnterior.titulo}) ══\n${capAnterior.resumo}\n[Este resumo garante coerência narrativa — evite repetir os pontos acima.]`
+    ? `\n\n══ CONTEXTO DO CAPÍTULO ANTERIOR (Cap. ${capAnterior.numero} — ${capAnterior.titulo}) ══\n${capAnterior.resumo}\n[Use este contexto para garantir coerência narrativa — não repita os pontos acima]\n`
     : capAnterior?.texto?.length > 100
-      ? `\n\n[Nota: O capítulo anterior (${capAnterior.numero} — ${capAnterior.titulo}) está em andamento. Mantenha coerência temática.]`
+      ? `\n\n[O capítulo anterior trata de "${capAnterior.titulo}". Mantenha coerência temática e evite repetições.]\n`
       : "";
 
   const doutrinaCtx = doutrina?.length
-    ? `\n\n══ FONTES DOUTRINÁRIAS PARA INTEGRAR ══\n${doutrina.slice(0,8).map(d=>`• ${d.notaRodape||d.abntRef||d.titulo}`).join("\n")}`
+    ? `\n\n══ FONTES DOUTRINÁRIAS PARA INTEGRAR NO TEXTO ══\n${doutrina.slice(0,8).map(d=>`• ${d.notaRodape||d.abntRef||d.titulo}`).join("\n")}\n[Cite no corpo do texto com nota de rodapé colada — nunca em bloco separado]`
     : "";
 
   const jurisCtx = juris?.length
-    ? `\n\n══ JURISPRUDÊNCIA PARA INTEGRAR ══\n${juris.slice(0,5).map((j,i)=>`${i+1}. ${j}`).join("\n")}`
+    ? `\n\n══ PRECEDENTES PARA INTEGRAR NO TEXTO ══\n${juris.slice(0,5).map((j,i)=>`${i+1}. ${j}`).join("\n")}\n[Citar dentro dos parágrafos como argumento — nunca em bloco ou seção separada]`
     : "";
 
   return `Você é coautor jurídico acadêmico de nível doutorado. Projeto: "${proj?.nome||"Tratado Jurídico"}" | Área: ${area} | Nível: ${nivel}
 ${resumoCtx}${doutrinaCtx}${jurisCtx}
 
 ══ TAREFA ══
-Escreva o **Capítulo ${cap.numero}: "${cap.titulo}"** completo, com mínimo de 3.000 palavras.
+Escreva o Capítulo ${cap.numero}: "${cap.titulo}" — mínimo 3.500 palavras.
+Siga RIGOROSAMENTE o padrão tipográfico MALHEIROS/SARAIVA (modelo Barroso, Di Pietro).
 
-ESTRUTURA OBRIGATÓRIA:
+══ ESTRUTURA OBRIGATÓRIA ══
+
 CAPÍTULO ${cap.numero}
-${cap.titulo.toUpperCase()}
-EMENTA_CAP: [subtemas do capítulo]
----
+${(cap.titulo||"").toUpperCase()}
 
-**Abertura e Contextualização**
-[3 parágrafos — situe o leitor, conecte ao capítulo anterior se houver]
+[Ementa em itálico logo abaixo do título — subtemas separados por ponto, em uma ou duas linhas]
 
-**Conceito, Natureza Jurídica e Fundamentos**
-[4+ parágrafos — defina, delimite, diferencie com notas ¹²³]
+[Corpo do texto contínuo organizado em seções numeradas em itálico:]
 
-**Regime Jurídico e Elementos Constitutivos**
-[4+ parágrafos — legislação vigente 2025, requisitos, efeitos]
+*1. Título da Primeira Seção*
 
-**Análise Jurisprudencial — STF e STJ (2020-2025)**
-> *EMENTA: [resumo]. (STJ, REsp X.XXX/UF, Rel. Min. Nome, Nª Turma, DJe DD.MM.AAAA.)*
-[Mínimo 4 precedentes — integre os acórdãos fornecidos acima]
+   [Desenvolvimento em parágrafos corridos. A doutrina é integrada:
+   "DI PIETRO¹ define o ato administrativo como toda manifestação unilateral..."
+   A jurisprudência é citada dentro do argumento, não em bloco:
+   "O STF, ao apreciar a questão, fixou a tese de que...¹, entendimento reiterado
+   pelo STJ em hipóteses análogas, por reconhecer que..."]
 
-**Controvérsias Doutrinárias e Tendências**
-[3+ parágrafos — correntes, dissonâncias, posição predominante]
+*2. Título da Segunda Seção*
 
-**Síntese do Capítulo**
-[3 parágrafos de fechamento — prepara o terreno para o próximo capítulo]
+   [Continua o desenvolvimento. Correntes doutrinárias divergentes são apresentadas
+   no próprio parágrafo: "Enquanto AUTOR A² sustenta que..., AUTOR B³ defende
+   posição contrária, argumentando que... Prevalece, todavia, o entendimento de..."]
+
+*3. Título da Terceira Seção*
+
+   [Terceira seção com mais desenvolvimento — cite precedentes onde reforçam o argumento,
+   dentro do parágrafo correspondente]
+
+[Mínimo 5 seções numeradas em itálico — quantas o tema exigir]
 
 ② NOTAS DE RODAPÉ
-¹ Prenome SOBRENOME, *Título*, N. ed., Cidade, Editora, ano, p. XX.
-[MÍNIMO 25 NOTAS — inclua doutrina e jurisprudência fornecidas]
+[Numeradas sequencialmente — mínimo 25 notas]
+¹ STF/STJ, [tipo de ação] [número]/[UF], Rel. Min. [Nome], [Órgão], j. [data]. Ementa: "[fragmento de até 2 linhas]".
+² Prenome SOBRENOME, *Título da Obra*, N. ed., Cidade: Editora, ano, p. XX.
 
 REGRAS ABSOLUTAS:
-✗ Nunca invente número de processo, relator, ementa ou página
-✓ Notas ¹²³ coladas à palavra: ex. Di Pietro¹ sustenta
-✓ Voz impessoal: "cumpre observar", "não se pode olvidar", "destarte"
-✓ Entregue COMPLETO — nunca truncar`;
+✗ NUNCA crie seção ou bloco separado de jurisprudência
+✗ NUNCA use **negrito** para títulos de seção — apenas *itálico numerado*
+✗ NUNCA use "> *EMENTA:*" ou blocos destacados no corpo do texto
+✗ NUNCA invente número de processo ou página de obra
+✓ Entregue COMPLETO — nunca truncar o texto`;
 }
 
 // 4.3 — Gera resumo automático de 150 palavras do capítulo anterior
@@ -1174,14 +1372,47 @@ function Linhas({ text, dark }) {
   return (<>{text.split("\n").map((line,i)=>{
     const l=line.trim();
     if(!l) return <div key={i} style={{height:7}}/>;
-    if(/^\*\*[^*]+\*\*$/.test(l)) return <div key={i} style={{fontWeight:700,color:fgHead,marginTop:16,marginBottom:5,fontSize:13.5,borderLeft:`3px solid ${blockBorder}`,paddingLeft:10}}>{l.replace(/\*\*/g,"")}</div>;
-    if(/^>/.test(l)) return <div key={i} style={{borderLeft:`4px solid ${blockBorder}`,padding:"8px 14px",margin:"10px 0",color:dark?"#c9a84c":"#3a2800",fontStyle:"italic",fontSize:12,lineHeight:1.75,background:blockBg,borderRadius:"0 4px 4px 0"}}>{l.replace(/^>\s*/,"")}</div>;
+
+    // Seção em itálico numerado — padrão Malheiros: *1. Título* ou *1.1 Título*
+    if(/^\*\d+[\d.]*\.\s+[^*]+\*$/.test(l)) {
+      const titulo = l.replace(/^\*|\*$/g,"");
+      return <div key={i} style={{fontStyle:"italic",fontWeight:400,color:fgHead,marginTop:22,marginBottom:8,fontSize:13,paddingLeft:0,borderLeft:"none"}}>{titulo}</div>;
+    }
+
+    // Ementa em itálico (logo abaixo do título do capítulo, sem marcador especial)
+    if(/^EMENTA_CAP:/i.test(l)) {
+      const txt = l.replace(/^EMENTA_CAP:\s*/i,"");
+      return <div key={i} style={{fontStyle:"italic",color:dark?"#c9c0b0":"#2a2015",fontSize:11,lineHeight:1.65,margin:"6px 0 16px",textAlign:"justify"}}>{txt}</div>;
+    }
+
+    // Título de capítulo em caixa alta
+    if(l===l.toUpperCase()&&/[A-ZÁÉÍÓÚ]{4,}/.test(l)&&l.length>4&&!/^\d/.test(l)&&!/^[①②③]/.test(l)) {
+      return <div key={i} style={{fontWeight:700,color:fgHead,marginTop:12,marginBottom:6,fontSize:14,textAlign:"center"}}>{l}</div>;
+    }
+
+    // Seção de notas rodapé
     if(/^[①②③④⑤⑥⑦]/.test(l)) return <div key={i} style={{fontWeight:700,fontSize:11,color:dark?"#f87171":"#8b1a1a",borderBottom:`1px solid ${dark?"#2a3550":"#e5e0d8"}`,paddingBottom:4,marginTop:18,marginBottom:7,textTransform:"uppercase",letterSpacing:".06em"}}>{l}</div>;
-    if(/^[¹²³⁴⁵⁶⁷⁸⁹]/.test(l)||(/^\d{1,2}[.\s]/.test(l)&&l.length<400)) return <div key={i} style={{fontSize:11,color:fgSub,lineHeight:1.65,paddingLeft:20,textIndent:"-20px",marginBottom:3}}>{l}</div>;
-    if(/^#{1,3}\s/.test(l)) return <div key={i} style={{fontWeight:700,color:fgHead,marginTop:16,marginBottom:5,fontSize:13.5}}>{l.replace(/^#+\s/,"")}</div>;
+
+    // Linha de nota de rodapé numerada
+    if(/^[¹²³⁴⁵⁶⁷⁸⁹]/.test(l)||(/^\d{1,2}[.\s]/.test(l)&&l.length<500)) {
+      return <div key={i} style={{fontSize:10.5,color:fgSub,lineHeight:1.7,paddingLeft:22,textIndent:"-22px",marginBottom:4,fontFamily:"Georgia,serif"}}>{l}</div>;
+    }
+
+    // Separador ---
+    if(/^-{3,}$/.test(l)) return <hr key={i} style={{border:"none",borderTop:`1px solid ${dark?"#2a3550":"#e5e0d8"}`,margin:"14px 0"}}/>;
+
+    // Citação em bloco (caso ainda apareça em textos legados)
+    if(/^>/.test(l)) return <div key={i} style={{borderLeft:`3px solid ${blockBorder}`,padding:"6px 14px",margin:"8px 0",color:dark?"#c9a84c":"#3a2800",fontStyle:"italic",fontSize:11.5,lineHeight:1.75,background:blockBg,borderRadius:"0 4px 4px 0"}}>{l.replace(/^>\s*/,"")}</div>;
+
+    // Cabeçalho # legado
+    if(/^#{1,3}\s/.test(l)) return <div key={i} style={{fontStyle:"italic",color:fgHead,marginTop:18,marginBottom:7,fontSize:13}}>{l.replace(/^#+\s/,"")}</div>;
+
+    // Bullet
     if(/^•/.test(l)) return <div key={i} style={{fontSize:12,color:fg,lineHeight:1.75,paddingLeft:16,textIndent:"-16px",marginBottom:4}}>{l}</div>;
+
+    // Parágrafo normal com inline formatting
     const segs=l.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/);
-    return <p key={i} style={{margin:"0 0 7px",textAlign:"justify",lineHeight:1.9,color:fg}}>{segs.map((s,j)=>{
+    return <p key={i} style={{margin:"0 0 0",textAlign:"justify",lineHeight:1.9,color:fg,textIndent:"1.25em",marginBottom:2}}>{segs.map((s,j)=>{
       if(/^\*\*[^*]+\*\*$/.test(s)) return <strong key={j}>{s.slice(2,-2)}</strong>;
       if(/^\*[^*]+\*$/.test(s)) return <em key={j}>{s.slice(1,-1)}</em>;
       return <span key={j}>{s}</span>;
