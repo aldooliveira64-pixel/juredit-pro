@@ -1372,6 +1372,8 @@ function App() {
   const fontesUnicas = [...new Map(todasFontes.map(f=>[f.id,f])).values()];
   const notaAtual = notaQual || calcularNota(capitulos, errosABNT, Object.values(fontesAprovadas).filter(Boolean).length);
 
+  // Geração principal
+  const send=useCallback(async(override)=>{
     const txt=override!==undefined?String(override).trim():tema.trim();
     if(!txt||loading) return;
     if(motor==="gemini"&&!geminiKey?.trim()){setStatus("❌ Cole a chave Gemini nas configurações.");setTab("editor");return;}
