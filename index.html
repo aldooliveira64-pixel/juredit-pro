@@ -1427,6 +1427,407 @@ function Toast({ msg, onClose }) {
 }
 
 // ══════════════════════════════════════════════
+// PETIÇÃO WIZARD — Formato Lex Jurídico
+// ══════════════════════════════════════════════
+
+const PETICAO_CAMPOS = [
+  { id:"enderecamento", label:"Endereçamento",  ic:"📍", ph:"Ex.: Excelentíssimo Senhor Doutor Juiz de Direito da 1ª Vara Cível da Comarca de São Paulo – SP",  max:500,  rows:2 },
+  { id:"autor",         label:"Autor",          ic:"👤", ph:"Qualificação do autor (nome, nacionalidade, estado civil, profissão, CPF/CNPJ, endereço...)",        max:500,  rows:3 },
+  { id:"reu",           label:"Réu",            ic:"👤", ph:"Qualificação do réu (nome, nacionalidade, estado civil, profissão, CPF/CNPJ, endereço...)",           max:500,  rows:3 },
+  { id:"fatos",         label:"Fatos",          ic:"📋", ph:"Descreva os fatos que embasam o pedido de forma clara e objetiva...",                                  max:4000, rows:6 },
+  { id:"direito",       label:"Direito",        ic:"⚖️", ph:"Fundamentação jurídica: dispositivos legais, jurisprudência e doutrina aplicáveis...",                 max:4000, rows:6 },
+  { id:"pedidos",       label:"Pedidos",        ic:"✅", ph:"Especifique os pedidos formulados ao final da petição...",                                             max:2000, rows:4 },
+];
+
+function PeticaoWizard({ onFechar, onGerar, darkMode, area, proj }) {
+  const G="#c9a84c", N=darkMode?"#e8dcc8":"#0f1a33", CARD=darkMode?"#111827":"#fff";
+  const CR=darkMode?"#0c1220":"#f5f1ea", BD=darkMode?"#1e2d45":"#e0dbd4", T2=darkMode?"#9ca3af":"#6b7280";
+  const AZUL="#1a3a6b", AZUL_LIGHT=darkMode?"#1e3a7a":"#e8edf5";
+
+  const [campos, setCampos] = useState({ enderecamento:"", autor:"", reu:"", fatos:"", direito:"", pedidos:"" });
+  const [analise, setAnalise] = useState(null);
+  const [analisando, setAnalisando] = useState(false);
+  const [gerando, setGerando] = useState(false);
+  const [rascunho, setRascunho] = useState("");
+  const [stream, setStream] = useState("");
+  const [salvo, setSalvo] = useState(false);
+  const [abaDir, setAbaDir] = useState("analise");
+  const totalChars = Object.values(campos).join("").length;
+  const progresso = Math.min(100, Math.round((Object.values(campos).filter(v=>v.trim().length>20).length / PETICAO_CAMPOS.length)*100));
+
+  const upd = (id, val) => { setCampos(c=>({...c,[id]:val})); setSalvo(false); };
+
+  const analisarTese = async () => {
+    if (!campos.direito.trim() && !campos.fatos.trim()) return;
+    setAnalisando(true); setAnalise(null);
+    const prompt = `Você é especialista em jurisprudência dos tribunais superiores brasileiros.
+
+Analise a seguinte tese jurídica e fatos de uma petição e responda APENAS com JSON no formato abaixo:
+
+FATOS: ${campos.fatos.slice(0,800)}
+FUNDAMENTAÇÃO JURÍDICA: ${campos.direito.slice(0,1200)}
+ÁREA: ${area}
+
+Responda com este JSON exato:
+{
+  "tendencia": "favorável" ou "desfavorável" ou "incerta",
+  "percentual": número de 0 a 100,
+  "resumo": "1-2 frases sobre a posição majoritária dos tribunais",
+  "acordaos": [
+    {"tribunal":"STJ","tipo":"REsp","tese":"resumo da tese em 1 linha","favoravel":true},
+    {"tribunal":"STF","tipo":"RE","tese":"resumo da tese em 1 linha","favoravel":true},
+    {"tribunal":"STJ","tipo":"AgInt","tese":"resumo da tese em 1 linha","favoravel":false}
+  ],
+  "recomendacao": "orientação objetiva para fortalecer a tese em 1-2 frases"
+}`;
+    try {
+      const raw = await chamarClaudeStream(
+        [{role:"user",content:prompt}],
+        "Especialista em jurisprudência brasileira. Responda apenas com JSON válido, sem markdown.",
+        null, ()=>{}
+      );
+      const clean = raw.replace(/```json?|```/gi,"").trim();
+      setAnalise(JSON.parse(clean));
+    } catch(e) {
+      setAnalise({ tendencia:"incerta", percentual:50, resumo:"Não foi possível analisar automaticamente. Verifique os campos Fatos e Direito.", acordaos:[], recomendacao:"Preencha os campos Fatos e Direito com mais detalhes." });
+    }
+    setAnalisando(false);
+  };
+
+  const gerarPeticao = async () => {
+    setGerando(true); setStream(""); setRascunho(""); setAbaDir("peticao");
+    const prompt = `Você é redator jurídico forense de máximo padrão. Redija uma PETIÇÃO JURÍDICA COMPLETA seguindo o padrão Malheiros/Forense com base nos dados abaixo.
+
+ENDEREÇAMENTO: ${campos.enderecamento||"[Endereçamento a completar]"}
+AUTOR: ${campos.autor||"[Qualificação do autor]"}
+RÉU: ${campos.reu||"[Qualificação do réu]"}
+FATOS NARRADOS: ${campos.fatos||"[Fatos a desenvolver]"}
+FUNDAMENTAÇÃO JURÍDICA: ${campos.direito||"[Fundamentação a desenvolver]"}
+PEDIDOS: ${campos.pedidos||"[Pedidos a especificar]"}
+ÁREA: ${area} | PROJETO: ${proj?.nome||""}
+
+ESTRUTURA OBRIGATÓRIA DA PETIÇÃO:
+
+${campos.enderecamento||"EXCELENTÍSSIMO SENHOR DOUTOR JUIZ DE DIREITO DA [VARA] DA COMARCA DE [CIDADE]"}
+
+[Qualificação completa do(a) AUTOR(A) e RÉUS(S)]
+
+vem, respeitosamente, à presença de Vossa Excelência, por meio de seu(s) advogado(s) infra-assinado(s), com fundamento nos artigos [dispositivos], propor a presente
+
+AÇÃO [TIPO DA AÇÃO]
+em face de [QUALIFICAÇÃO DO RÉU],
+pelos fatos e fundamentos a seguir expostos:
+
+*I. DOS FATOS*
+[Narração clara, cronológica e objetiva — parágrafos corridos com recuo]
+
+*II. DO DIREITO*
+
+*1. [Primeiro fundamento jurídico]*
+[Texto corrido — jurisprudência integrada no parágrafo como argumento de autoridade, nunca em bloco]
+
+*2. [Segundo fundamento]*
+[Texto corrido — doutrina citada com nota de rodapé colada: "Di Pietro¹ sustenta que..."]
+
+*3. [Fundamento adicional se necessário]*
+
+*III. DOS PEDIDOS*
+Diante do exposto, requer a Vossa Excelência:
+a) [pedido principal];
+b) [pedido subsidiário/acessório];
+c) A condenação em custas e honorários advocatícios.
+
+Dá-se à causa o valor de R$ [valor].
+
+Termos em que pede deferimento.
+[Cidade], [data].
+
+[Advogado]
+OAB/[Estado] [número]
+
+② NOTAS DE RODAPÉ
+[mínimo 10 notas — doutrina com páginas + jurisprudência com ementa breve]
+
+REGRAS: jurisprudência integrada no texto, seções em *itálico numerado*, voz formal, NUNCA truncar.`;
+
+    try {
+      const reply = await chamarClaudeStream(
+        [{role:"user",content:prompt}],
+        `Você é redator jurídico forense especializado em ${area}. Voz formal e técnica. Jurisprudência integrada no texto — nunca em bloco separado.`,
+        partial => setStream(partial), ()=>{}
+      );
+      setStream(""); setRascunho(reply); setGerando(false);
+    } catch(e) { setStream(""); setGerando(false); }
+  };
+
+  const salvarRascunho = () => {
+    try { localStorage.setItem("jep:peticao_rascunho", JSON.stringify({campos,rascunho,ts:Date.now()})); setSalvo(true); setTimeout(()=>setSalvo(false),2500); } catch{}
+  };
+
+  const tendCor = analise?.tendencia==="favorável"?"#16a34a":analise?.tendencia==="desfavorável"?"#b91c1c":"#b45309";
+  const tendIc  = analise?.tendencia==="favorável"?"🟢":analise?.tendencia==="desfavorável"?"🔴":"🟡";
+
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:1000,background:darkMode?"rgba(0,0,0,.85)":"rgba(0,0,0,.6)",display:"flex",alignItems:"stretch",justifyContent:"center"}}>
+      <div style={{width:"100%",maxWidth:1400,background:CR,display:"flex",flexDirection:"column",overflow:"hidden",boxShadow:"0 0 60px rgba(0,0,0,.4)"}}>
+
+        {/* ── Header ── */}
+        <div style={{background:darkMode?"#070f1c":"#0f1a33",padding:"12px 24px",display:"flex",alignItems:"center",gap:14,borderBottom:`2px solid ${G}`,flexShrink:0}}>
+          <div style={{width:42,height:42,background:"rgba(201,168,76,.12)",border:`1px solid ${G}40`,borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>📄</div>
+          <div style={{flex:1}}>
+            <div style={{fontSize:16,fontWeight:700,color:"white",lineHeight:1.2}}>Nova Petição</div>
+            <div style={{fontSize:10,color:"rgba(255,255,255,.45)",marginTop:1}}>Elabore sua petição com apoio de IA e valide com segurança · {area}</div>
+          </div>
+          {/* Progresso */}
+          <div style={{display:"flex",alignItems:"center",gap:10,marginRight:8}}>
+            <div style={{fontSize:9,color:"rgba(255,255,255,.4)",fontFamily:"monospace"}}>Campos preenchidos</div>
+            <div style={{width:120,height:4,background:"rgba(255,255,255,.1)",borderRadius:2,overflow:"hidden"}}>
+              <div style={{height:"100%",width:`${progresso}%`,background:progresso===100?"#16a34a":G,borderRadius:2,transition:"width .4s"}}/>
+            </div>
+            <div style={{fontSize:10,color:progresso===100?"#4ade80":G,fontFamily:"monospace",fontWeight:700}}>{progresso}%</div>
+          </div>
+          <button onClick={onFechar} style={{padding:"7px 16px",background:"rgba(255,255,255,.08)",border:"1px solid rgba(255,255,255,.15)",color:"rgba(255,255,255,.7)",borderRadius:5,cursor:"pointer",fontSize:11,fontFamily:"monospace"}}>✕ Fechar</button>
+        </div>
+
+        {/* ── Corpo ── */}
+        <div style={{flex:1,display:"flex",overflow:"hidden"}}>
+
+          {/* ─── Coluna Central — Formulário ─── */}
+          <div style={{flex:1,overflowY:"auto",padding:"20px 28px"}}>
+            <div style={{display:"flex",gap:8,marginBottom:18,alignItems:"center"}}>
+              <span style={{fontSize:9,color:T2,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:".1em"}}>Petições</span>
+              <span style={{fontSize:9,color:T2}}>›</span>
+              <span style={{fontSize:9,color:N,fontFamily:"monospace",fontWeight:700}}>Nova Petição</span>
+            </div>
+
+            {/* Campos do formulário */}
+            {PETICAO_CAMPOS.map(campo=>{
+              const val = campos[campo.id]||"";
+              const pct = Math.round((val.length/campo.max)*100);
+              return (
+                <div key={campo.id} style={{display:"flex",gap:16,marginBottom:18,alignItems:"flex-start"}}>
+                  {/* Ícone */}
+                  <div style={{width:36,height:36,borderRadius:8,background:AZUL_LIGHT,border:`1px solid ${darkMode?"#2a3a5a":"#c8d5e8"}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0,marginTop:4}}>{campo.ic}</div>
+                  {/* Campo */}
+                  <div style={{flex:1}}>
+                    <label style={{fontSize:12,fontWeight:700,color:N,display:"block",marginBottom:5}}>{campo.label}</label>
+                    <textarea
+                      value={val}
+                      onChange={e=>upd(campo.id,e.target.value)}
+                      rows={campo.rows}
+                      maxLength={campo.max}
+                      placeholder={campo.ph}
+                      style={{width:"100%",padding:"10px 12px",border:`1px solid ${val.trim()?"#c9a84c60":BD}`,borderRadius:6,fontFamily:"Georgia,serif",fontSize:12,lineHeight:1.7,resize:"vertical",outline:"none",background:CARD,color:N,transition:"border-color .2s"}}
+                      onFocus={e=>e.target.style.borderColor=G}
+                      onBlur={e=>e.target.style.borderColor=val.trim()?"#c9a84c60":BD}
+                    />
+                    <div style={{display:"flex",justifyContent:"flex-end",marginTop:3}}>
+                      <span style={{fontSize:9,color:pct>90?"#b91c1c":T2,fontFamily:"monospace"}}>{val.length}/{campo.max}</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Rascunho gerado */}
+            {(stream||rascunho)&&(
+              <div style={{marginTop:8,padding:"16px 20px",background:CARD,border:`2px solid ${G}40`,borderRadius:8}}>
+                <div style={{fontSize:9,color:G,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:".1em",marginBottom:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <span>⚖️ Petição gerada — Claude Sonnet 4 · Padrão Forense/Malheiros</span>
+                  {rascunho&&<div style={{display:"flex",gap:6}}>
+                    <button onClick={()=>gerarDocx(rascunho,`Petição_${proj?.nome||""}`,proj)} style={{padding:"4px 10px",background:"#8b1a1a",color:"white",border:"none",borderRadius:4,cursor:"pointer",fontSize:9,fontFamily:"monospace",fontWeight:700}}>⬇ .docx</button>
+                    <button onClick={()=>exportarMarkdown(rascunho,"Peticao")} style={{padding:"4px 10px",background:"transparent",border:`1px solid ${G}`,color:G,borderRadius:4,cursor:"pointer",fontSize:9,fontFamily:"monospace"}}>⬇ .md</button>
+                    <button onClick={()=>onGerar(rascunho)} style={{padding:"4px 10px",background:darkMode?"#1a2744":"#0f1a33",color:"white",border:"none",borderRadius:4,cursor:"pointer",fontSize:9,fontFamily:"monospace",fontWeight:700}}>✍️ Abrir no Editor</button>
+                  </div>}
+                </div>
+                <div style={{fontSize:12.5,lineHeight:1.95,fontFamily:"Georgia,serif",color:N,maxHeight:520,overflowY:"auto"}}>
+                  <Linhas text={stream||rascunho} dark={darkMode}/>
+                  {gerando&&<span style={{display:"inline-block",width:9,height:16,background:G,verticalAlign:"middle",animation:"jb .9s infinite",marginLeft:2,borderRadius:2}}/>}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ─── Sidebar Direita — IA ─── */}
+          <div style={{width:320,flexShrink:0,borderLeft:`1px solid ${BD}`,background:CARD,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+            {/* Abas sidebar */}
+            <div style={{display:"flex",borderBottom:`1px solid ${BD}`,flexShrink:0}}>
+              {[{id:"analise",l:"Análise IA"},{id:"peticao",l:"Petição"},{id:"fontes",l:"Fontes"}].map(a=>(
+                <button key={a.id} onClick={()=>setAbaDir(a.id)}
+                  style={{flex:1,padding:"10px 4px",border:"none",borderBottom:`2px solid ${abaDir===a.id?AZUL:"transparent"}`,background:"transparent",color:abaDir===a.id?AZUL:T2,cursor:"pointer",fontSize:10,fontFamily:"monospace",fontWeight:abaDir===a.id?700:400,transition:"all .12s"}}>
+                  {a.l}
+                </button>
+              ))}
+            </div>
+
+            <div style={{flex:1,overflowY:"auto",padding:"16px"}}>
+
+              {/* ABA: ANÁLISE IA */}
+              {abaDir==="analise"&&(<div>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+                  <div style={{fontSize:16}}>🤖</div>
+                  <div>
+                    <div style={{fontSize:11,fontWeight:700,color:N}}>IA para conferência de jurisprudência</div>
+                    <div style={{fontSize:9,color:T2,marginTop:1}}>Análise automática da tese com base na jurisprudência atual</div>
+                  </div>
+                </div>
+
+                <button onClick={analisarTese} disabled={analisando||(!campos.fatos.trim()&&!campos.direito.trim())}
+                  style={{width:"100%",padding:"9px",background:analisando||((!campos.fatos.trim()&&!campos.direito.trim()))?"#d4cfc6":AZUL,color:"white",border:"none",borderRadius:6,cursor:analisando?"not-allowed":"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700,marginBottom:14,display:"flex",alignItems:"center",justifyContent:"center",gap:7}}>
+                  {analisando?<><div style={{width:10,height:10,borderRadius:"50%",border:"2px solid white",borderTopColor:"transparent",animation:"spin 1s linear infinite"}}/>Analisando tese…</>:"🔍 Analisar tese"}
+                </button>
+
+                {!analise&&!analisando&&(
+                  <div style={{fontSize:10,color:T2,lineHeight:1.7,padding:"10px 12px",background:darkMode?"rgba(255,255,255,.03)":"#f9f9f9",borderRadius:6,border:`1px solid ${BD}`}}>
+                    Preencha os campos <strong>Fatos</strong> e <strong>Direito</strong> e clique em "Analisar tese" para ver a posição majoritária dos tribunais.
+                  </div>
+                )}
+
+                {analise&&(
+                  <div>
+                    {/* Posição majoritária */}
+                    <div style={{fontSize:10,fontWeight:700,color:N,marginBottom:8}}>Posição majoritária do tribunal</div>
+                    <div style={{padding:"12px 14px",background:darkMode?`${tendCor}15`:`${tendCor}08`,border:`1px solid ${tendCor}40`,borderRadius:8,marginBottom:12}}>
+                      <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:6}}>
+                        <span style={{fontSize:16}}>{tendIc}</span>
+                        <span style={{fontSize:12,fontWeight:700,color:tendCor,textTransform:"capitalize"}}>Tendência {analise.tendencia}</span>
+                      </div>
+                      <div style={{fontSize:10,color:darkMode?"rgba(255,255,255,.6)":N,lineHeight:1.6,marginBottom:10}}>{analise.resumo}</div>
+                      {/* Barra percentual */}
+                      <div style={{marginBottom:4}}>
+                        <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                          <span style={{fontSize:9,color:T2,fontFamily:"monospace"}}>{analise.percentual}% dos julgados</span>
+                          <span style={{fontSize:9,color:tendCor,fontFamily:"monospace",fontWeight:700}}>Favoráveis à tese</span>
+                        </div>
+                        <div style={{height:6,background:darkMode?"rgba(255,255,255,.1)":"rgba(0,0,0,.08)",borderRadius:3,overflow:"hidden"}}>
+                          <div style={{height:"100%",width:`${analise.percentual}%`,background:tendCor,borderRadius:3,transition:"width .8s"}}/>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Acórdãos */}
+                    {analise.acordaos?.length>0&&(<>
+                      <div style={{fontSize:10,fontWeight:700,color:N,marginBottom:8}}>Julgados relevantes ({analise.acordaos.length})</div>
+                      {analise.acordaos.map((ac,i)=>(
+                        <div key={i} style={{padding:"9px 11px",border:`1px solid ${BD}`,borderRadius:6,marginBottom:6,background:CARD}}>
+                          <div style={{display:"flex",gap:6,alignItems:"flex-start"}}>
+                            <span style={{fontSize:8,padding:"1px 5px",background:ac.favoravel?"rgba(22,163,74,.12)":"rgba(185,28,28,.1)",color:ac.favoravel?"#16a34a":"#b91c1c",borderRadius:3,fontFamily:"monospace",fontWeight:700,flexShrink:0,marginTop:1}}>{ac.favoravel?"✓":"✗"} {ac.tribunal}</span>
+                            <div>
+                              <div style={{fontSize:9,fontWeight:700,color:N,marginBottom:2}}>{ac.tipo}</div>
+                              <div style={{fontSize:9,color:T2,lineHeight:1.5}}>{ac.tese}</div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </>)}
+
+                    {/* Recomendação */}
+                    {analise.recomendacao&&(
+                      <div style={{padding:"10px 12px",background:darkMode?"rgba(201,168,76,.07)":"rgba(201,168,76,.06)",border:`1px solid ${G}30`,borderRadius:6,marginTop:8}}>
+                        <div style={{fontSize:9,color:G,fontFamily:"monospace",marginBottom:4}}>💡 RECOMENDAÇÃO</div>
+                        <div style={{fontSize:10,color:N,lineHeight:1.6}}>{analise.recomendacao}</div>
+                      </div>
+                    )}
+
+                    {/* Validação humana */}
+                    <div style={{marginTop:14,padding:"10px 12px",background:darkMode?"rgba(255,255,255,.03)":"#f9f9f9",border:`1px solid ${BD}`,borderRadius:6}}>
+                      <div style={{display:"flex",gap:7,alignItems:"center",marginBottom:4}}>
+                        <div style={{width:28,height:28,borderRadius:"50%",background:"rgba(180,83,9,.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}>👤</div>
+                        <div>
+                          <div style={{fontSize:10,fontWeight:700,color:"#b45309"}}>Revisão necessária</div>
+                          <div style={{fontSize:9,color:T2}}>Valide as referências antes da aprovação final</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>)}
+
+              {/* ABA: PETIÇÃO GERADA */}
+              {abaDir==="peticao"&&(<div>
+                <div style={{fontSize:11,fontWeight:700,color:N,marginBottom:12}}>Texto da Petição</div>
+                {!rascunho&&!gerando&&<div style={{fontSize:10,color:T2,lineHeight:1.7}}>Clique em "Gerar Petição" para visualizar aqui o texto completo.</div>}
+                {(stream||rascunho)&&(
+                  <div style={{fontSize:11,lineHeight:1.85,fontFamily:"Georgia,serif",color:N}}>
+                    <Linhas text={(stream||rascunho).slice(0,1200)} dark={darkMode}/>
+                    {(stream||rascunho).length>1200&&<div style={{fontSize:9,color:T2,fontFamily:"monospace",marginTop:6}}>... {Math.round((stream||rascunho).length/4)} palavras aprox. · Role o painel central para ver completo</div>}
+                  </div>
+                )}
+              </div>)}
+
+              {/* ABA: FONTES */}
+              {abaDir==="fontes"&&(<div>
+                <div style={{fontSize:11,fontWeight:700,color:N,marginBottom:12}}>Fontes consultadas</div>
+                {analise?.acordaos?.length>0?(
+                  <div>
+                    <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:12,padding:"10px 12px",background:darkMode?"rgba(255,255,255,.04)":"#f5f9ff",borderRadius:6,border:`1px solid ${BD}`}}>
+                      <div style={{fontSize:28,fontWeight:900,color:AZUL,fontFamily:"monospace"}}>{analise.acordaos.length}</div>
+                      <div style={{fontSize:10,color:T2}}>Acórdãos analisados automaticamente via IA</div>
+                    </div>
+                    {analise.acordaos.map((ac,i)=>(
+                      <div key={i} style={{fontSize:10,color:N,padding:"7px 10px",borderBottom:`1px solid ${BD}`,lineHeight:1.6}}>
+                        <span style={{fontWeight:700,fontFamily:"monospace",color:AZUL}}>{ac.tribunal} · {ac.tipo}</span><br/>
+                        {ac.tese}
+                      </div>
+                    ))}
+                  </div>
+                ):(
+                  <div style={{fontSize:10,color:T2,lineHeight:1.7}}>Execute a análise de tese para ver as fontes jurisprudenciais.</div>
+                )}
+              </div>)}
+            </div>
+          </div>
+        </div>
+
+        {/* ── Rodapé — Ações ── */}
+        <div style={{background:CARD,borderTop:`1px solid ${BD}`,padding:"12px 24px",display:"flex",alignItems:"center",gap:10,flexShrink:0,flexWrap:"wrap"}}>
+          {/* Anexos */}
+          <div style={{display:"flex",gap:6,alignItems:"center",marginRight:8}}>
+            <span style={{fontSize:10,color:T2,fontFamily:"monospace"}}>Anexos:</span>
+            <label style={{padding:"6px 12px",background:darkMode?"rgba(255,255,255,.06)":"#f5f5f5",border:`1px solid ${BD}`,borderRadius:5,cursor:"pointer",fontSize:10,fontFamily:"monospace",color:T2,display:"flex",gap:5,alignItems:"center"}}>
+              <span style={{color:"#e53e3e"}}>📄</span> PDF
+              <input type="file" accept=".pdf" style={{display:"none"}} onChange={()=>{}}/>
+            </label>
+            <label style={{padding:"6px 12px",background:darkMode?"rgba(255,255,255,.06)":"#f5f5f5",border:`1px solid ${BD}`,borderRadius:5,cursor:"pointer",fontSize:10,fontFamily:"monospace",color:T2,display:"flex",gap:5,alignItems:"center"}}>
+              <span style={{color:"#2b6cb0"}}>📝</span> Word
+              <input type="file" accept=".docx,.doc" style={{display:"none"}} onChange={()=>{}}/>
+            </label>
+          </div>
+
+          <div style={{flex:1}}/>
+
+          {/* Botão Analisar tese */}
+          <button onClick={analisarTese} disabled={analisando}
+            style={{padding:"9px 18px",background:"transparent",border:`1.5px solid ${AZUL}`,color:AZUL,borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700,display:"flex",alignItems:"center",gap:6}}>
+            {analisando?<><div style={{width:10,height:10,borderRadius:"50%",border:`2px solid ${AZUL}`,borderTopColor:"transparent",animation:"spin 1s linear infinite"}}/>Analisando…</>:<>🔍 Analisar tese</>}
+          </button>
+
+          {/* Salvar rascunho */}
+          <button onClick={salvarRascunho}
+            style={{padding:"9px 16px",background:"transparent",border:`1.5px solid ${BD}`,color:T2,borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"monospace",display:"flex",alignItems:"center",gap:5}}>
+            {salvo?"✓ Salvo":"💾 Salvar rascunho"}
+          </button>
+
+          {/* Gerar Petição */}
+          <button onClick={gerarPeticao} disabled={gerando}
+            style={{padding:"9px 20px",background:gerando?"#d4cfc6":darkMode?"#1a2744":"#0f1a33",color:gerando?T2:G,border:`1.5px solid ${gerando?"#d4cfc6":G}`,borderRadius:6,cursor:gerando?"not-allowed":"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700,display:"flex",alignItems:"center",gap:6}}>
+            {gerando?<><div style={{width:10,height:10,borderRadius:"50%",border:`2px solid ${G}`,borderTopColor:"transparent",animation:"spin 1s linear infinite"}}/>Gerando…</>:<>⚖️ Gerar Petição</>}
+          </button>
+
+          {/* Aprovar e exportar */}
+          {rascunho&&(
+            <button onClick={()=>gerarDocx(rascunho,`Peticao_${proj?.nome||"JurEditPro"}`,proj)}
+              style={{padding:"9px 20px",background:"#16a34a",color:"white",border:"none",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700,display:"flex",alignItems:"center",gap:6}}>
+              ✅ Aprovar e Exportar
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════
 // APP PRINCIPAL
 // ══════════════════════════════════════════════
 function App() {
@@ -1477,6 +1878,7 @@ function App() {
   const [notaQual,setNotaQual]=useState(null);
   const [showSidebar,setShowSidebar]=useState(false);
   const [capituloAtivo,setCapituloAtivo]=useState({titulo:"Capítulo ativo",doutrina:[]});
+  const [showPeticao,setShowPeticao]=useState(false);
   // ── FASE 4: Capítulos ──
   const capVazio = (n) => ({ id:`cap_${Date.now()}_${n}`, numero:n, titulo:"", texto:"", resumo:"", progresso:0, doutrina:[], juris:[], ts:null, gerando:false });
   const [capitulos,setCapitulos]=useState(()=>load("jep:caps",[capVazio(1)]));
@@ -1826,12 +2228,17 @@ function App() {
           <div style={{fontSize:8,color:TEXT2,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:".13em",marginBottom:10}}>Tipo de documento — selecione e vá ao Editor</div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:9,marginBottom:18}}>
             {TIPOS_DOC.map(t=>(
-              <div key={t.id} className="tc" onClick={()=>{setTipo(t.id);setTab("editor");setTimeout(()=>taRef.current?.focus(),100);}}
+              <div key={t.id} className="tc"
+                onClick={()=>{
+                  if(t.id==="peticao"){ setShowPeticao(true); return; }
+                  setTipo(t.id);setTab("editor");setTimeout(()=>taRef.current?.focus(),100);
+                }}
                 style={{background:tipo===t.id?`${t.cor}12`:CARD,border:`2px solid ${tipo===t.id?t.cor:BORDER}`,borderRadius:10,padding:"13px 12px",cursor:"pointer",transition:"all .15s",position:"relative",overflow:"hidden"}}>
                 <div style={{position:"absolute",top:0,left:0,right:0,height:3,background:t.cor}}/>
                 <div style={{width:40,height:40,borderRadius:10,background:`${t.cor}15`,border:`1px solid ${t.cor}30`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,marginBottom:8,marginTop:4}}>{t.ic}</div>
                 <div style={{fontSize:11.5,fontWeight:700,color:tipo===t.id?t.cor:N,marginBottom:3,lineHeight:1.3}}>{t.l}</div>
                 <div style={{fontSize:10,color:TEXT2,lineHeight:1.5}}>{t.desc}</div>
+                {t.id==="peticao"&&<div style={{marginTop:6,fontSize:8,padding:"1px 6px",background:"rgba(15,118,110,.15)",border:"1px solid rgba(15,118,110,.35)",color:"#0f766e",borderRadius:10,fontFamily:"monospace",display:"inline-block"}}>Wizard Lex ✦</div>}
               </div>
             ))}
           </div>
@@ -1864,7 +2271,7 @@ function App() {
             <div style={{background:CARD,borderBottom:`1px solid ${BORDER}`,padding:"5px 14px",display:"flex",gap:5,alignItems:"center",flexWrap:"wrap",flexShrink:0}}>
               <span style={{fontSize:8,color:TEXT2,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:".09em",whiteSpace:"nowrap"}}>Tipo:</span>
               {TIPOS_DOC.map(t=>(
-                <button key={t.id} onClick={()=>setTipo(t.id)}
+                <button key={t.id} onClick={()=>{ if(t.id==="peticao"){setShowPeticao(true);return;} setTipo(t.id); }}
                   style={{padding:"3px 9px",border:`1px solid ${tipo===t.id?t.cor:BORDER}`,borderRadius:12,background:tipo===t.id?`${t.cor}12`:"transparent",color:tipo===t.id?t.cor:TEXT2,cursor:"pointer",fontSize:9.5,fontFamily:"monospace",fontWeight:tipo===t.id?700:400,transition:"all .12s"}}>
                   {t.ic} {t.l}
                 </button>
@@ -2768,6 +3175,24 @@ function App() {
       )}
 
       <Toast msg={toast} onClose={()=>setToast("")}/>
+
+      {/* ══ PETIÇÃO WIZARD — overlay ══ */}
+      {showPeticao&&(
+        <PeticaoWizard
+          onFechar={()=>setShowPeticao(false)}
+          onGerar={(texto)=>{
+            setShowPeticao(false);
+            setTipo("peticao");
+            setTab("editor");
+            setMsgs(m=>[...m,{role:"assistant",text:texto,motor:"claude",ts:Date.now()}]);
+            setHist(h=>[...h,{role:"assistant",content:texto}]);
+            setToast("✅ Petição gerada — aberta no Editor");
+          }}
+          darkMode={darkMode}
+          area={area}
+          proj={p}
+        />
+      )}
     </div>
   );
 }
