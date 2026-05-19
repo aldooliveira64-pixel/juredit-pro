@@ -2203,11 +2203,110 @@ REGRAS: jurisprudência integrada no texto, seções em *itálico numerado*, voz
 }
 
 // ══════════════════════════════════════════════
+// INDEXEDDB — Etapa 3: persistência sem limite
+// Substitui localStorage para capitulos, sessoes e fontes.
+// localStorage mantido apenas para preferências pequenas.
+// ══════════════════════════════════════════════
+
+const IDB_NAME    = "JurEditProDB";
+const IDB_VERSION = 1;
+const IDB_STORES  = ["capitulos", "sessoes", "fontes"];
+
+function idbAbrir() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      IDB_STORES.forEach(s => {
+        if (!db.objectStoreNames.contains(s))
+          db.createObjectStore(s, { keyPath: "id" });
+      });
+    };
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror   = e => reject(e.target.error);
+  });
+}
+
+function idbGetAll(db, store) {
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(store, "readonly").objectStore(store).getAll();
+    req.onsuccess = e => resolve(e.target.result || []);
+    req.onerror   = e => reject(e.target.error);
+  });
+}
+
+// Salva um único item (upsert por keyPath id)
+function idbPut(db, store, item) {
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(store, "readwrite").objectStore(store).put(item);
+    req.onsuccess = () => resolve();
+    req.onerror   = e => reject(e.target.error);
+  });
+}
+
+// Remove um item por id
+function idbDelete(db, store, id) {
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(store, "readwrite").objectStore(store).delete(id);
+    req.onsuccess = () => resolve();
+    req.onerror   = e => reject(e.target.error);
+  });
+}
+
+// Substitui o conteúdo inteiro de um store numa única transação
+function idbReplaceAll(db, store, items) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store, "readwrite");
+    tx.oncomplete = resolve;
+    tx.onerror    = e => reject(e.target.error);
+    tx.onabort    = e => reject(e.target.error);
+    const os = tx.objectStore(store);
+    os.clear();
+    items.forEach(item => os.put(item));
+  });
+}
+
+// Migração única: move dados do localStorage → IndexedDB e apaga as chaves antigas
+async function idbMigrar(db) {
+  const ls = (k) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch { return null; } };
+  let migrou = false;
+
+  const caps = ls("jep:caps");
+  if (caps?.length) {
+    await idbReplaceAll(db, "capitulos", caps);
+    localStorage.removeItem("jep:caps");
+    migrou = true;
+  }
+
+  const sess = ls("jep:sessoes");
+  if (sess?.length) {
+    // Garante que todos os ids são comparáveis (alguns podem ser number)
+    await idbReplaceAll(db, "sessoes", sess.map(s => ({ ...s, id: String(s.id) })));
+    localStorage.removeItem("jep:sessoes");
+    migrou = true;
+  }
+
+  const fonts = ls("jep:fontes");
+  if (fonts?.length) {
+    // Fontes armazenadas como snapshot único — simples e confiável
+    await idbPut(db, "fontes", { id: "snapshot", items: fonts });
+    localStorage.removeItem("jep:fontes");
+    migrou = true;
+  }
+
+  return migrou;
+}
+
+// ══════════════════════════════════════════════
 // APP PRINCIPAL
 // ══════════════════════════════════════════════
 function App() {
   const load=(k,d)=>{ try{const v=localStorage.getItem(k);return v?JSON.parse(v):d;}catch{return d;} };
   const save=(k,v)=>{ try{localStorage.setItem(k,JSON.stringify(v));}catch{} };
+
+  // ── Etapa 3: conexão IndexedDB ──────────────────────────────────────────
+  const dbRef     = useRef(null);
+  const [dbPronto, setDbPronto] = useState(false);
 
   const [motor,setMotor]=useState(()=>load("jep:motor","claude"));
   const [geminiKey,setGeminiKey]=useState(()=>{ try{return localStorage.getItem("jep:gkey")||"";}catch{return "";} });
@@ -2220,7 +2319,8 @@ function App() {
   const [tema,setTema]=useState("");
   const [area,setArea]=useState(()=>load("jep:area","Direito Administrativo"));
   const [nivel,setNivel]=useState(()=>load("jep:nivel","Doutorado e tratados acadêmicos"));
-  const [sessoes,setSessoes]=useState(()=>load("jep:sessoes",[]));
+  // sessoes, fontesSalvas e capitulos: estado inicial vazio — IndexedDB carrega no mount
+  const [sessoes,setSessoes]=useState([]);
   const [sessaoId,setSessaoId]=useState(null);
   const [msgs,setMsgs]=useState([]);
   const [hist,setHist]=useState([]);
@@ -2241,7 +2341,7 @@ function App() {
   const [biblioLoading,setBiblioLoading]=useState(false);
   const [biblioStream,setBiblioStream]=useState("");
   const [biblioFiltro,setBiblioFiltro]=useState("todos");
-  const [fontesSalvas,setFontesSalvas]=useState(()=>load("jep:fontes",[]));
+  const [fontesSalvas,setFontesSalvas]=useState([]);
   const [biblioAbntInput,setBiblioAbntInput]=useState("");
   const [biblioSearchTerm,setBiblioSearchTerm]=useState("");
   // ── FASE 5: Validação & Dashboard ──
@@ -2254,9 +2354,9 @@ function App() {
   const [showSidebar,setShowSidebar]=useState(false);
   const [capituloAtivo,setCapituloAtivo]=useState({titulo:"Capítulo ativo",doutrina:[]});
   const [showPeticao,setShowPeticao]=useState(false);
-  // ── FASE 4: Capítulos ──
+  // ── FASE 4: Capítulos — estado inicial vazio (IndexedDB carrega no mount) ──
   const capVazio = (n) => ({ id:`cap_${Date.now()}_${n}`, numero:n, titulo:"", texto:"", resumo:"", progresso:0, doutrina:[], juris:[], ts:null, gerando:false });
-  const [capitulos,setCapitulos]=useState(()=>load("jep:caps",[capVazio(1)]));
+  const [capitulos,setCapitulos]=useState([]);
   const [capSelId,setCapSelId]=useState(null);
   const [gerandoCapId,setGerandoCapId]=useState(null);
   const [gerandoResId,setGerandoResId]=useState(null);
@@ -2278,10 +2378,65 @@ function App() {
   useEffect(()=>save("jep:proj",proj),[proj]);
   useEffect(()=>save("jep:area",area),[area]);
   useEffect(()=>save("jep:nivel",nivel),[nivel]);
-  useEffect(()=>save("jep:sessoes",sessoes),[sessoes]);
-  useEffect(()=>save("jep:fontes",fontesSalvas),[fontesSalvas]);
-  useEffect(()=>save("jep:caps",capitulos),[capitulos]);
   useEffect(()=>save("jep:fontesAprov",fontesAprovadas),[fontesAprovadas]);
+
+  // ── Etapa 3: inicialização IndexedDB + migração automática ──────────────
+  useEffect(() => {
+    idbAbrir().then(async db => {
+      dbRef.current = db;
+
+      // Migra de localStorage se ainda há dados lá (executa apenas uma vez)
+      const precisaMigrar = !!localStorage.getItem("jep:caps")
+                         || !!localStorage.getItem("jep:sessoes")
+                         || !!localStorage.getItem("jep:fontes");
+      if (precisaMigrar) await idbMigrar(db);
+
+      // Carrega os três stores em paralelo
+      const [caps, sess, fontsRec] = await Promise.all([
+        idbGetAll(db, "capitulos"),
+        idbGetAll(db, "sessoes"),
+        idbGetAll(db, "fontes"),
+      ]);
+
+      // Capítulos: ordena por número, garante ao menos um vazio
+      const capsOrdenados = caps.sort((a,b) => (a.numero||0) - (b.numero||0));
+      setCapitulos(capsOrdenados.length ? capsOrdenados : [capVazio(1)]);
+
+      // Sessões: mais recente primeiro, limita a 20
+      setSessoes(sess.sort((a,b) => Number(b.id) - Number(a.id)).slice(0, 20));
+
+      // Fontes: desempacota o snapshot único
+      const snapshot = fontsRec.find(r => r.id === "snapshot");
+      setFontesSalvas(snapshot?.items || []);
+
+      setDbPronto(true);
+    }).catch(err => {
+      // Fallback gracioso para localStorage se IndexedDB falhar
+      console.warn("IndexedDB indisponível, usando localStorage:", err.message);
+      const ls = (k,d) => { try{const v=localStorage.getItem(k);return v?JSON.parse(v):d;}catch{return d;} };
+      setCapitulos(ls("jep:caps", [capVazio(1)]));
+      setSessoes(ls("jep:sessoes", []));
+      setFontesSalvas(ls("jep:fontes", []));
+      setDbPronto(true);
+    });
+  }, []); // eslint-disable-line
+
+  // ── Etapa 3: persistência IndexedDB para os 3 stores grandes ────────────
+  useEffect(() => {
+    if (!dbRef.current || !dbPronto || !capitulos.length) return;
+    idbReplaceAll(dbRef.current, "capitulos", capitulos).catch(console.error);
+  }, [capitulos, dbPronto]);
+
+  useEffect(() => {
+    if (!dbRef.current || !dbPronto) return;
+    idbReplaceAll(dbRef.current, "sessoes", sessoes).catch(console.error);
+  }, [sessoes, dbPronto]);
+
+  useEffect(() => {
+    if (!dbRef.current || !dbPronto) return;
+    idbPut(dbRef.current, "fontes", { id:"snapshot", items: fontesSalvas }).catch(console.error);
+  }, [fontesSalvas, dbPronto]);
+
   useEffect(()=>{ if(capitulos.length>1) setAlertasCoer(verificarCoerencia(capitulos)); },[capitulos]);
   useEffect(()=>botRef.current?.scrollIntoView({behavior:"smooth"}),[msgs,loading,streamText]);
   useEffect(()=>biblioRef.current?.scrollIntoView({behavior:"smooth"}),[biblioResult,biblioStream]);
@@ -2458,6 +2613,19 @@ function App() {
   ];
 
   // ─── RENDER ───────────────────────────────────────
+
+  // Tela de carregamento enquanto IndexedDB inicializa (< 200ms em média)
+  if (!dbPronto) return (
+    <div style={{position:"fixed",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:darkMode?"#0c1220":"#f5f1ea",gap:16}}>
+      <div style={{fontSize:40}}>⚖️</div>
+      <div style={{fontFamily:"monospace",fontSize:12,color:darkMode?"#c9a84c":"#0f1a33",letterSpacing:".08em"}}>Carregando JurEditPro…</div>
+      <div style={{width:120,height:3,background:darkMode?"#1e2d45":"#e0dbd4",borderRadius:2,overflow:"hidden"}}>
+        <div style={{height:"100%",width:"60%",background:"#c9a84c",borderRadius:2,animation:"jb 1.2s ease-in-out infinite"}}/>
+      </div>
+      <style>{`@keyframes jb{0%,100%{transform:translateX(-50%)}50%{transform:translateX(100px)}}`}</style>
+    </div>
+  );
+
   return (
     <div style={{display:"flex",flexDirection:"column",height:"100vh",fontFamily:"Georgia,serif",background:CR,overflow:"hidden",color:N}}>
       <style>{`
