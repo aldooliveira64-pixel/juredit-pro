@@ -9,6 +9,7 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     html,body,#root{height:100%;width:100%;overflow:hidden}
@@ -1661,10 +1662,114 @@ function PeticaoWizard({ onFechar, onGerar, darkMode, area, proj }) {
   const [stream, setStream] = useState("");
   const [salvo, setSalvo] = useState(false);
   const [abaDir, setAbaDir] = useState("analise");
+  // ── Etapa 2: estado de anexos ───────────────────────────────────────────
+  const [anexos, setAnexos] = useState([]);          // [{id, nome, tipo, tamanho, base64, texto, status}]
+  const [uploadErro, setUploadErro] = useState("");
+  const pdfRef  = useRef(null);
+  const wordRef = useRef(null);
+
   const totalChars = Object.values(campos).join("").length;
   const progresso = Math.min(100, Math.round((Object.values(campos).filter(v=>v.trim().length>20).length / PETICAO_CAMPOS.length)*100));
 
   const upd = (id, val) => { setCampos(c=>({...c,[id]:val})); setSalvo(false); };
+
+  // ── Leitura de arquivo como ArrayBuffer ────────────────────────────────
+  const lerArquivo = (file) => new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload  = e => res(e.target.result);
+    r.onerror = () => rej(new Error("Falha na leitura do arquivo."));
+    r.readAsArrayBuffer(file);
+  });
+
+  // ── Converte ArrayBuffer para Base64 ───────────────────────────────────
+  function bufferParaBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  // ── Extrai texto de DOCX usando JSZip ──────────────────────────────────
+  async function extrairTextoDocx(buffer) {
+    if (typeof JSZip === "undefined") throw new Error("JSZip não carregou. Recarregue a página.");
+    const zip  = await JSZip.loadAsync(buffer);
+    const xmlFile = zip.file("word/document.xml");
+    if (!xmlFile) throw new Error("Arquivo .docx inválido: word/document.xml não encontrado.");
+    const xmlStr = await xmlFile.async("string");
+    // Substitui quebras de parágrafo e corridas por espaço/newline antes de remover tags
+    const comQuebras = xmlStr
+      .replace(/<w:p[ >]/g, "\n<w:p ")
+      .replace(/<\/w:p>/g, "</w:p>\n")
+      .replace(/<w:tab\/>/g, "\t");
+    const semTags = comQuebras.replace(/<[^>]+>/g, "");
+    // Decodifica entidades XML básicas e normaliza espaços
+    return semTags
+      .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+      .replace(/[ \t]+/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  // ── Handler PDF ─────────────────────────────────────────────────────────
+  const handleUploadPDF = async (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    e.target.value = "";                                   // permite re-upload do mesmo arquivo
+    setUploadErro("");
+    const id = Date.now() + "_pdf";
+    const tamanhoMB = (file.size / 1024 / 1024).toFixed(2);
+    if (file.size > 10 * 1024 * 1024) { setUploadErro("PDF muito grande (máx. 10 MB)."); return; }
+
+    // Insere item com status "lendo"
+    setAnexos(prev => [...prev, { id, nome:file.name, tipo:"pdf", tamanho:tamanhoMB, base64:null, texto:null, status:"lendo" }]);
+    try {
+      const buffer = await lerArquivo(file);
+      const base64 = bufferParaBase64(buffer);
+      setAnexos(prev => prev.map(a => a.id===id ? {...a, base64, status:"pronto"} : a));
+    } catch(err) {
+      setAnexos(prev => prev.map(a => a.id===id ? {...a, status:"erro", erro:err.message} : a));
+      setUploadErro(err.message);
+    }
+  };
+
+  // ── Handler Word (.docx) ────────────────────────────────────────────────
+  const handleUploadWord = async (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    e.target.value = "";
+    setUploadErro("");
+    const id = Date.now() + "_docx";
+    const tamanhoMB = (file.size / 1024 / 1024).toFixed(2);
+    if (file.size > 10 * 1024 * 1024) { setUploadErro("Arquivo Word muito grande (máx. 10 MB)."); return; }
+
+    setAnexos(prev => [...prev, { id, nome:file.name, tipo:"docx", tamanho:tamanhoMB, base64:null, texto:null, status:"lendo" }]);
+    try {
+      const buffer = await lerArquivo(file);
+      const texto  = await extrairTextoDocx(buffer);
+      if (!texto.trim()) throw new Error("Nenhum texto extraído. O documento pode estar protegido ou vazio.");
+      setAnexos(prev => prev.map(a => a.id===id ? {...a, texto, status:"pronto"} : a));
+    } catch(err) {
+      setAnexos(prev => prev.map(a => a.id===id ? {...a, status:"erro", erro:err.message} : a));
+      setUploadErro(err.message);
+    }
+  };
+
+  const removerAnexo = (id) => setAnexos(prev => prev.filter(a => a.id !== id));
+
+  // ── Monta content[] para o Claude (texto + documentos PDF) ─────────────
+  const montarMensagemComAnexos = (promptText) => {
+    const content = [];
+    // PDFs prontos como document blocks (Claude lê nativamente)
+    anexos.filter(a => a.tipo==="pdf" && a.status==="pronto" && a.base64).forEach(a => {
+      content.push({ type:"document", source:{ type:"base64", media_type:"application/pdf", data:a.base64 } });
+    });
+    // Texto de DOCX e extrato dos PDFs como texto complementar
+    const textosDocx = anexos.filter(a => a.tipo==="docx" && a.status==="pronto" && a.texto);
+    const blocoAnexos = textosDocx.length
+      ? "\n\n── DOCUMENTOS WORD ANEXADOS ──\n" + textosDocx.map(a => `[${a.nome}]\n${a.texto.slice(0, 6000)}`).join("\n\n---\n\n")
+      : "";
+    content.push({ type:"text", text: promptText + blocoAnexos });
+    return content;
+  };
 
   const analisarTese = async () => {
     if (!campos.direito.trim() && !campos.fatos.trim()) return;
@@ -1690,8 +1795,9 @@ Responda com este JSON exato:
   "recomendacao": "orientação objetiva para fortalecer a tese em 1-2 frases"
 }`;
     try {
+      const content = montarMensagemComAnexos(prompt);
       const raw = await chamarClaudeStream(
-        [{role:"user",content:prompt}],
+        [{role:"user", content}],
         "Especialista em jurisprudência brasileira. Responda apenas com JSON válido, sem markdown.",
         null, ()=>{}
       );
@@ -1705,8 +1811,11 @@ Responda com este JSON exato:
 
   const gerarPeticao = async () => {
     setGerando(true); setStream(""); setRascunho(""); setAbaDir("peticao");
+    const anexosInfo = anexos.filter(a=>a.status==="pronto").length
+      ? `\nDOCUMENTOS ANEXADOS: ${anexos.filter(a=>a.status==="pronto").map(a=>`${a.nome} (${a.tipo.toUpperCase()})`).join(", ")} — analise seu conteúdo e use-o para embasar os fatos e o direito da petição.\n`
+      : "";
     const prompt = `Você é redator jurídico forense de máximo padrão. Redija uma PETIÇÃO JURÍDICA COMPLETA seguindo o padrão Malheiros/Forense com base nos dados abaixo.
-
+${anexosInfo}
 ENDEREÇAMENTO: ${campos.enderecamento||"[Endereçamento a completar]"}
 AUTOR: ${campos.autor||"[Qualificação do autor]"}
 RÉU: ${campos.reu||"[Qualificação do réu]"}
@@ -1760,8 +1869,9 @@ OAB/[Estado] [número]
 REGRAS: jurisprudência integrada no texto, seções em *itálico numerado*, voz formal, NUNCA truncar.`;
 
     try {
+      const content = montarMensagemComAnexos(prompt);
       const reply = await chamarClaudeStream(
-        [{role:"user",content:prompt}],
+        [{role:"user", content}],
         `Você é redator jurídico forense especializado em ${area}. Voz formal e técnica. Jurisprudência integrada no texto — nunca em bloco separado.`,
         partial => setStream(partial), ()=>{}
       );
@@ -1989,47 +2099,103 @@ REGRAS: jurisprudência integrada no texto, seções em *itálico numerado*, voz
         </div>
 
         {/* ── Rodapé — Ações ── */}
-        <div style={{background:CARD,borderTop:`1px solid ${BD}`,padding:"12px 24px",display:"flex",alignItems:"center",gap:10,flexShrink:0,flexWrap:"wrap"}}>
-          {/* Anexos */}
-          <div style={{display:"flex",gap:6,alignItems:"center",marginRight:8}}>
-            <span style={{fontSize:10,color:T2,fontFamily:"monospace"}}>Anexos:</span>
-            <label style={{padding:"6px 12px",background:darkMode?"rgba(255,255,255,.06)":"#f5f5f5",border:`1px solid ${BD}`,borderRadius:5,cursor:"pointer",fontSize:10,fontFamily:"monospace",color:T2,display:"flex",gap:5,alignItems:"center"}}>
+        <div style={{background:CARD,borderTop:`1px solid ${BD}`,padding:"12px 24px",display:"flex",flexDirection:"column",gap:10,flexShrink:0}}>
+
+          {/* ── Faixa de Anexos ── */}
+          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+            <span style={{fontSize:10,color:T2,fontFamily:"monospace",flexShrink:0}}>Anexos:</span>
+
+            {/* Botão PDF */}
+            <label style={{padding:"5px 11px",background:darkMode?"rgba(255,255,255,.06)":"#f5f5f5",border:`1px solid ${BD}`,borderRadius:5,cursor:"pointer",fontSize:10,fontFamily:"monospace",color:T2,display:"flex",gap:5,alignItems:"center",userSelect:"none"}}>
               <span style={{color:"#e53e3e"}}>📄</span> PDF
-              <input type="file" accept=".pdf" style={{display:"none"}} onChange={()=>{}}/>
+              <input ref={pdfRef} type="file" accept=".pdf" style={{display:"none"}} onChange={handleUploadPDF}/>
             </label>
-            <label style={{padding:"6px 12px",background:darkMode?"rgba(255,255,255,.06)":"#f5f5f5",border:`1px solid ${BD}`,borderRadius:5,cursor:"pointer",fontSize:10,fontFamily:"monospace",color:T2,display:"flex",gap:5,alignItems:"center"}}>
+
+            {/* Botão Word */}
+            <label style={{padding:"5px 11px",background:darkMode?"rgba(255,255,255,.06)":"#f5f5f5",border:`1px solid ${BD}`,borderRadius:5,cursor:"pointer",fontSize:10,fontFamily:"monospace",color:T2,display:"flex",gap:5,alignItems:"center",userSelect:"none"}}>
               <span style={{color:"#2b6cb0"}}>📝</span> Word
-              <input type="file" accept=".docx,.doc" style={{display:"none"}} onChange={()=>{}}/>
+              <input ref={wordRef} type="file" accept=".docx,.doc" style={{display:"none"}} onChange={handleUploadWord}/>
             </label>
+
+            {/* Chips dos arquivos anexados */}
+            {anexos.map(a => (
+              <div key={a.id} title={a.status==="erro"?a.erro:""} style={{
+                display:"flex",alignItems:"center",gap:6,
+                padding:"4px 10px",borderRadius:20,fontSize:10,fontFamily:"monospace",
+                background: a.status==="erro"   ? (darkMode?"rgba(185,28,28,.15)":"#fef2f2")
+                          : a.status==="pronto" ? (darkMode?"rgba(22,163,74,.12)":"#f0fdf4")
+                                                : (darkMode?"rgba(255,255,255,.07)":"#f9f9f9"),
+                border:`1px solid ${
+                  a.status==="erro"   ? "#fca5a5"
+                : a.status==="pronto" ? "#86efac"
+                                      : BD}`,
+                color: a.status==="erro"?"#b91c1c": a.status==="pronto"?"#15803d":T2,
+                maxWidth:220, overflow:"hidden"
+              }}>
+                {/* Ícone de status */}
+                {a.status==="lendo" && (
+                  <div style={{width:8,height:8,borderRadius:"50%",border:"1.5px solid currentColor",borderTopColor:"transparent",animation:"spin 1s linear infinite",flexShrink:0}}/>
+                )}
+                {a.status==="pronto" && <span style={{flexShrink:0}}>✓</span>}
+                {a.status==="erro"   && <span style={{flexShrink:0}}>✗</span>}
+
+                {/* Tipo */}
+                <span style={{fontSize:9,padding:"1px 5px",borderRadius:3,background:"rgba(0,0,0,.08)",flexShrink:0,textTransform:"uppercase"}}>
+                  {a.tipo}
+                </span>
+
+                {/* Nome */}
+                <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                  {a.nome}
+                </span>
+
+                {/* Tamanho */}
+                <span style={{fontSize:9,color:T2,flexShrink:0}}>{a.tamanho} MB</span>
+
+                {/* Remover */}
+                <button onClick={()=>removerAnexo(a.id)} style={{background:"none",border:"none",cursor:"pointer",color:T2,padding:0,fontSize:11,lineHeight:1,flexShrink:0}} title="Remover anexo">×</button>
+              </div>
+            ))}
+
+            {/* Mensagem de erro de upload */}
+            {uploadErro && (
+              <span style={{fontSize:10,color:"#b91c1c",fontFamily:"monospace",display:"flex",alignItems:"center",gap:4}}>
+                ⚠ {uploadErro}
+                <button onClick={()=>setUploadErro("")} style={{background:"none",border:"none",cursor:"pointer",color:"#b91c1c",fontSize:11,padding:0}}>×</button>
+              </span>
+            )}
           </div>
 
-          <div style={{flex:1}}/>
+          {/* ── Faixa de Ações ── */}
+          <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+            <div style={{flex:1}}/>
 
-          {/* Botão Analisar tese */}
-          <button onClick={analisarTese} disabled={analisando}
-            style={{padding:"9px 18px",background:"transparent",border:`1.5px solid ${AZUL}`,color:AZUL,borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700,display:"flex",alignItems:"center",gap:6}}>
-            {analisando?<><div style={{width:10,height:10,borderRadius:"50%",border:`2px solid ${AZUL}`,borderTopColor:"transparent",animation:"spin 1s linear infinite"}}/>Analisando…</>:<>🔍 Analisar tese</>}
-          </button>
-
-          {/* Salvar rascunho */}
-          <button onClick={salvarRascunho}
-            style={{padding:"9px 16px",background:"transparent",border:`1.5px solid ${BD}`,color:T2,borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"monospace",display:"flex",alignItems:"center",gap:5}}>
-            {salvo?"✓ Salvo":"💾 Salvar rascunho"}
-          </button>
-
-          {/* Gerar Petição */}
-          <button onClick={gerarPeticao} disabled={gerando}
-            style={{padding:"9px 20px",background:gerando?"#d4cfc6":darkMode?"#1a2744":"#0f1a33",color:gerando?T2:G,border:`1.5px solid ${gerando?"#d4cfc6":G}`,borderRadius:6,cursor:gerando?"not-allowed":"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700,display:"flex",alignItems:"center",gap:6}}>
-            {gerando?<><div style={{width:10,height:10,borderRadius:"50%",border:`2px solid ${G}`,borderTopColor:"transparent",animation:"spin 1s linear infinite"}}/>Gerando…</>:<>⚖️ Gerar Petição</>}
-          </button>
-
-          {/* Aprovar e exportar */}
-          {rascunho&&(
-            <button onClick={()=>gerarDocx(rascunho,`Peticao_${proj?.nome||"JurEditPro"}`,proj)}
-              style={{padding:"9px 20px",background:"#16a34a",color:"white",border:"none",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700,display:"flex",alignItems:"center",gap:6}}>
-              ✅ Aprovar e Exportar
+            {/* Botão Analisar tese */}
+            <button onClick={analisarTese} disabled={analisando}
+              style={{padding:"9px 18px",background:"transparent",border:`1.5px solid ${AZUL}`,color:AZUL,borderRadius:6,cursor:analisando?"not-allowed":"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700,display:"flex",alignItems:"center",gap:6}}>
+              {analisando?<><div style={{width:10,height:10,borderRadius:"50%",border:`2px solid ${AZUL}`,borderTopColor:"transparent",animation:"spin 1s linear infinite"}}/>Analisando…</>:<>🔍 Analisar tese</>}
             </button>
-          )}
+
+            {/* Salvar rascunho */}
+            <button onClick={salvarRascunho}
+              style={{padding:"9px 16px",background:"transparent",border:`1.5px solid ${BD}`,color:T2,borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"monospace",display:"flex",alignItems:"center",gap:5}}>
+              {salvo?"✓ Salvo":"💾 Salvar rascunho"}
+            </button>
+
+            {/* Gerar Petição */}
+            <button onClick={gerarPeticao} disabled={gerando}
+              style={{padding:"9px 20px",background:gerando?"#d4cfc6":darkMode?"#1a2744":"#0f1a33",color:gerando?T2:G,border:`1.5px solid ${gerando?"#d4cfc6":G}`,borderRadius:6,cursor:gerando?"not-allowed":"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700,display:"flex",alignItems:"center",gap:6}}>
+              {gerando?<><div style={{width:10,height:10,borderRadius:"50%",border:`2px solid ${G}`,borderTopColor:"transparent",animation:"spin 1s linear infinite"}}/>Gerando…</>:<>⚖️ Gerar Petição</>}
+            </button>
+
+            {/* Aprovar e exportar */}
+            {rascunho&&(
+              <button onClick={()=>gerarDocx(rascunho,`Peticao_${proj?.nome||"JurEditPro"}`,proj)}
+                style={{padding:"9px 20px",background:"#16a34a",color:"white",border:"none",borderRadius:6,cursor:"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700,display:"flex",alignItems:"center",gap:6}}>
+                ✅ Aprovar e Exportar
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
