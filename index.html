@@ -287,17 +287,79 @@ function abntGerarListaReferencias(refs) {
 
 // ══════════════════════════════════════════════
 // OAI-PMH + LexML — Fase 3.2 / 3.3
+// ETAPA 1 — Proxy duplo + APIs nativas por repositório
 // ══════════════════════════════════════════════
 
-const CORS_PROXY = "https://api.allorigins.win/get?url=";
+// ── Configuração de proxies com fallback ───────────────────────────────────
+const CORS_PROXIES = [
+  {
+    id: "allorigins",
+    wrap: url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+    parse: async res => { const j = await res.json(); return j.contents; },
+  },
+  {
+    id: "corsproxy",
+    wrap: url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+    parse: async res => res.text(),
+  },
+];
 
-async function fetchViaProxy(url) {
-  const res = await fetch(CORS_PROXY + encodeURIComponent(url), { headers:{ Accept:"application/json" } });
-  if (!res.ok) throw new Error(`Proxy HTTP ${res.status}`);
-  const json = await res.json();
-  return json.contents || json;
+const FETCH_TIMEOUT_MS = 9000;
+
+function comTimeout(promise, ms = FETCH_TIMEOUT_MS, label = "") {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) =>
+      setTimeout(() => rej(new Error(`Timeout ${ms}ms${label ? " — " + label : ""}`)), ms)
+    ),
+  ]);
 }
 
+async function fetchViaProxy(url) {
+  let lastErr = null;
+  for (const proxy of CORS_PROXIES) {
+    try {
+      const res = await comTimeout(
+        fetch(proxy.wrap(url), { headers: { Accept: "application/json, text/xml, text/html, */*" } }),
+        FETCH_TIMEOUT_MS,
+        proxy.id
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const content = await proxy.parse(res);
+      if (!content) throw new Error("Resposta vazia");
+      return content;
+    } catch (e) { lastErr = e; }
+  }
+  throw new Error(`Todos os proxies falharam: ${lastErr?.message || "erro desconhecido"}`);
+}
+
+async function fetchDireto(url, opts = {}) {
+  const res = await comTimeout(fetch(url, opts), FETCH_TIMEOUT_MS, url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res;
+}
+
+// Tenta direto → proxy com fallback duplo
+async function fetchJSON(url) {
+  try {
+    const res = await fetchDireto(url, { headers: { Accept: "application/json" } });
+    return await res.json();
+  } catch {
+    const raw = await fetchViaProxy(url);
+    return typeof raw === "string" ? JSON.parse(raw) : raw;
+  }
+}
+
+async function fetchXML(url) {
+  try {
+    const res = await fetchDireto(url, { headers: { Accept: "application/xml, text/xml" } });
+    return await res.text();
+  } catch {
+    return await fetchViaProxy(url);
+  }
+}
+
+// ── Constantes ─────────────────────────────────────────────────────────────
 const OAI_REPOSITORIES = [
   { id:"bdtd",    label:"BDTD — IBICT",        homepageURL:"https://bdtd.ibict.br/" },
   { id:"usp",     label:"Repositório USP",      homepageURL:"https://www.teses.usp.br/" },
@@ -306,85 +368,232 @@ const OAI_REPOSITORIES = [
 ];
 
 const LEXML_TIPOS_LIST = [
-  { id:"todos",             label:"Todos os tipos" },
-  { id:"lei.ordinaria",     label:"Lei Ordinária" },
-  { id:"lei.complementar",  label:"Lei Complementar" },
-  { id:"decreto",           label:"Decreto" },
-  { id:"medida.provisoria", label:"Medida Provisória" },
-  { id:"resolucao",         label:"Resolução" },
-  { id:"portaria",          label:"Portaria" },
+  { id:"todos",                 label:"Todos os tipos" },
+  { id:"lei.ordinaria",         label:"Lei Ordinária" },
+  { id:"lei.complementar",      label:"Lei Complementar" },
+  { id:"decreto",               label:"Decreto" },
+  { id:"medida.provisoria",     label:"Medida Provisória" },
+  { id:"resolucao",             label:"Resolução" },
+  { id:"portaria",              label:"Portaria" },
   { id:"emenda.constitucional", label:"Emenda Constitucional" },
 ];
 
-function oaiClean(str) { return String(str||"").replace(/\s+/g," ").trim(); }
+// ── Parsers ────────────────────────────────────────────────────────────────
+function oaiClean(str) { return String(str || "").replace(/\s+/g, " ").trim(); }
 
-function parseVuFind(json) {
-  return (json?.records||[]).map(r=>({
-    titulo: oaiClean(r.title||r.shortTitle||"Sem título"),
-    autor:  oaiClean(Array.isArray(r.author)?r.author[0]:r.author||"Autor desconhecido"),
-    ano:    String(r.publishDate?.[0]||r.year||""),
-    resumo: oaiClean(r.summary?.[0]||r.abstract||""),
-    url:    r.urls?.[0]?.url||r.url||"",
-    tipo:   r.formats?.[0]||"Tese/Dissertação",
-    fonte:  "BDTD — IBICT",
+// VuFind API — BDTD e USP compartilham o mesmo engine
+function parseVuFind(json, label) {
+  return (json?.records || []).map(r => ({
+    titulo: oaiClean(r.title || r.shortTitle || "Sem título"),
+    autor:  oaiClean(Array.isArray(r.author) ? r.author[0] : r.author || "Autor desconhecido"),
+    ano:    String(r.publishDate?.[0] || r.year || ""),
+    resumo: oaiClean(r.summary?.[0] || r.abstract || ""),
+    url:    r.urls?.[0]?.url || r.url || "",
+    tipo:   r.formats?.[0] || "Tese/Dissertação",
+    fonte:  label,
   }));
 }
 
+// OAI-DC genérico — usado como último recurso, sempre com janela de datas
 function parseOAIXML(xmlStr, repoLabel) {
-  const doc = new DOMParser().parseFromString(xmlStr,"text/xml");
+  const doc = new DOMParser().parseFromString(xmlStr, "text/xml");
   const records = [];
-  doc.querySelectorAll("record").forEach(item=>{
-    const dc=tag=>oaiClean(item.querySelector(`dc\\:${tag}, ${tag}`)?.textContent||"");
-    const dcAll=tag=>[...item.querySelectorAll(`dc\\:${tag}, ${tag}`)].map(e=>oaiClean(e.textContent));
-    const titulo=dc("title"); if(!titulo) return;
-    records.push({ titulo, autor:dcAll("creator").join("; ")||"Autor desconhecido", ano:(dc("date")||"").slice(0,4), resumo:dc("description"), url:dcAll("identifier").find(s=>s.startsWith("http"))||"", tipo:dc("type")||"Tese/Dissertação", fonte:repoLabel });
+  doc.querySelectorAll("record").forEach(item => {
+    const dc    = tag => oaiClean(item.querySelector(`dc\\:${tag}, ${tag}`)?.textContent || "");
+    const dcAll = tag => [...item.querySelectorAll(`dc\\:${tag}, ${tag}`)].map(e => oaiClean(e.textContent));
+    const titulo = dc("title"); if (!titulo) return;
+    records.push({
+      titulo,
+      autor:  dcAll("creator").join("; ") || "Autor desconhecido",
+      ano:    (dc("date") || "").slice(0, 4),
+      resumo: dc("description"),
+      url:    dcAll("identifier").find(s => s.startsWith("http")) || "",
+      tipo:   dc("type") || "Tese/Dissertação",
+      fonte:  repoLabel,
+    });
   });
   return records;
 }
 
-async function buscarTesesOAI(keyword, options={}) {
-  const { repoId="bdtd", maxResults=20 } = options;
-  const repo = OAI_REPOSITORIES.find(r=>r.id===repoId)||OAI_REPOSITORIES[0];
+// DSpace 7 — HAL+JSON (UNICAMP usa esta versão)
+function parseDSpace7(json, label) {
+  const objects = json?._embedded?.searchResult?._embedded?.objects || [];
+  return objects.map(obj => {
+    const item = obj?._embedded?.indexableObject; if (!item) return null;
+    const meta   = item.metadata || {};
+    const get    = key => meta[key]?.[0]?.value || "";
+    const getAll = key => (meta[key] || []).map(m => m.value).join("; ");
+    return {
+      titulo: oaiClean(get("dc.title") || item.name || "Sem título"),
+      autor:  oaiClean(getAll("dc.contributor.author") || getAll("dc.creator") || "Autor desconhecido"),
+      ano:    (get("dc.date.issued") || get("dc.date.available") || "").slice(0, 4),
+      resumo: oaiClean(get("dc.description.abstract") || get("dc.description") || ""),
+      url:    item.handle ? `https://repositorio.unicamp.br/handle/${item.handle}` : "",
+      tipo:   get("dc.type") || "Tese/Dissertação",
+      fonte:  label,
+    };
+  }).filter(Boolean);
+}
+
+// DSpace 6 REST — array de items com metadata[] (UFRJ Pantheon usa esta versão)
+function parseDSpace6(items, label, baseHandle) {
+  return (items || []).map(item => {
+    const meta   = {};
+    (item.metadata || []).forEach(m => { if (!meta[m.key]) meta[m.key] = []; meta[m.key].push(m.value); });
+    const get    = key => meta[key]?.[0] || "";
+    const getAll = key => (meta[key] || []).join("; ");
+    return {
+      titulo: oaiClean(get("dc.title") || item.name || "Sem título"),
+      autor:  oaiClean(getAll("dc.contributor.author") || getAll("dc.creator") || "Autor desconhecido"),
+      ano:    (get("dc.date.issued") || get("dc.date.available") || "").slice(0, 4),
+      resumo: oaiClean(get("dc.description.abstract") || get("dc.description") || ""),
+      url:    item.handle ? `${baseHandle}/handle/${item.handle}` : "",
+      tipo:   get("dc.type") || "Tese/Dissertação",
+      fonte:  label,
+    };
+  });
+}
+
+// ── Funções de busca por repositório ──────────────────────────────────────
+
+// BDTD: VuFind API (direto + proxy duplo)
+async function buscarBDTD(keyword, maxResults) {
+  const url = `https://bdtd.ibict.br/vufind/api/v1/search?type=AllFields&lookfor=${encodeURIComponent(keyword)}&limit=${maxResults}&sort=relevance&field[]=title&field[]=author&field[]=publishDate&field[]=abstract&field[]=url`;
+  const json = await fetchJSON(url);
+  const results = parseVuFind(json, "BDTD — IBICT").slice(0, maxResults);
+  if (!results.length) throw new Error("Nenhum resultado na BDTD para este termo.");
+  return results;
+}
+
+// USP: VuFind API nativa → OAI-PMH com janela de 5 anos (último recurso)
+async function buscarUSP(keyword, maxResults) {
+  // Tentativa 1 — VuFind API (mesmo engine da BDTD)
   try {
-    if (repo.id==="bdtd") {
-      const url=`https://bdtd.ibict.br/vufind/api/v1/search?type=AllFields&lookfor=${encodeURIComponent(keyword)}&limit=${maxResults}&sort=relevance&field[]=title&field[]=author&field[]=publishDate&field[]=abstract&field[]=url`;
-      let json;
-      try { const r=await fetch(url,{headers:{Accept:"application/json"}}); json=await r.json(); }
-      catch { json=JSON.parse(await fetchViaProxy(url)); }
-      return parseVuFind(json).slice(0,maxResults);
-    }
-    const baseURLs={ usp:"https://www.teses.usp.br/index.php/oai/", unicamp:"https://repositorio.unicamp.br/oai/request", ufrj:"https://pantheon.ufrj.br/oai/request" };
-    const url=`${baseURLs[repo.id]||baseURLs.usp}?verb=ListRecords&metadataPrefix=oai_dc`;
-    const xmlStr=await fetchViaProxy(url);
-    return parseOAIXML(xmlStr,repo.label).filter(r=>r.titulo.toLowerCase().includes(keyword.toLowerCase().slice(0,8))).slice(0,maxResults);
-  } catch(err) {
-    return [{ _erro:true, mensagem:err.message, fonte:repo.label }];
+    const url = `https://www.teses.usp.br/index.php/vufind/api/v1/search?type=AllFields&lookfor=${encodeURIComponent(keyword)}&limit=${maxResults}&sort=relevance&field[]=title&field[]=author&field[]=publishDate&field[]=abstract&field[]=url`;
+    const json = await fetchJSON(url);
+    const results = parseVuFind(json, "Repositório USP");
+    if (results.length) return results.slice(0, maxResults);
+  } catch {}
+
+  // Tentativa 2 — OAI-PMH com janela de 5 anos (evita varredura total do repositório)
+  const anoBase = new Date().getFullYear() - 5;
+  const urlOAI = `https://www.teses.usp.br/index.php/oai/?verb=ListRecords&metadataPrefix=oai_dc&from=${anoBase}-01-01`;
+  const xmlStr = await fetchXML(urlOAI);
+  const kw = keyword.toLowerCase();
+  return parseOAIXML(xmlStr, "Repositório USP")
+    .filter(r => r.titulo.toLowerCase().includes(kw) || r.resumo.toLowerCase().includes(kw))
+    .slice(0, maxResults);
+}
+
+// UNICAMP: DSpace 7 REST → DSpace 6 REST → OAI-PMH com janela de 5 anos
+async function buscarUNICAMP(keyword, maxResults) {
+  // Tentativa 1 — DSpace 7
+  try {
+    const url = `https://repositorio.unicamp.br/server/api/discover/search/objects?query=${encodeURIComponent(keyword)}&size=${maxResults}&dsoType=item`;
+    const json = await fetchJSON(url);
+    const results = parseDSpace7(json, "Repositório UNICAMP");
+    if (results.length) return results.slice(0, maxResults);
+  } catch {}
+
+  // Tentativa 2 — DSpace 6 REST
+  try {
+    const url = `https://repositorio.unicamp.br/rest/items?q=${encodeURIComponent(keyword)}&limit=${maxResults}&expand=metadata`;
+    const json = await fetchJSON(url);
+    if (Array.isArray(json) && json.length)
+      return parseDSpace6(json, "Repositório UNICAMP", "https://repositorio.unicamp.br").slice(0, maxResults);
+  } catch {}
+
+  // Tentativa 3 — OAI-PMH com janela de 5 anos
+  const anoBase = new Date().getFullYear() - 5;
+  const urlOAI = `https://repositorio.unicamp.br/oai/request?verb=ListRecords&metadataPrefix=oai_dc&from=${anoBase}-01-01`;
+  const xmlStr = await fetchXML(urlOAI);
+  const kw = keyword.toLowerCase();
+  return parseOAIXML(xmlStr, "Repositório UNICAMP")
+    .filter(r => r.titulo.toLowerCase().includes(kw) || r.resumo.toLowerCase().includes(kw))
+    .slice(0, maxResults);
+}
+
+// UFRJ Pantheon: DSpace 6 REST → DSpace 7 REST → OAI-PMH com janela de 5 anos
+async function buscarUFRJ(keyword, maxResults) {
+  // Tentativa 1 — DSpace 6 REST
+  try {
+    const url = `https://pantheon.ufrj.br/rest/items?q=${encodeURIComponent(keyword)}&limit=${maxResults}&expand=metadata`;
+    const json = await fetchJSON(url);
+    if (Array.isArray(json) && json.length)
+      return parseDSpace6(json, "Pantheon — UFRJ", "https://pantheon.ufrj.br").slice(0, maxResults);
+  } catch {}
+
+  // Tentativa 2 — DSpace 7 REST
+  try {
+    const url = `https://pantheon.ufrj.br/server/api/discover/search/objects?query=${encodeURIComponent(keyword)}&size=${maxResults}&dsoType=item`;
+    const json = await fetchJSON(url);
+    const results = parseDSpace7(json, "Pantheon — UFRJ");
+    if (results.length) return results.slice(0, maxResults);
+  } catch {}
+
+  // Tentativa 3 — OAI-PMH com janela de 5 anos
+  const anoBase = new Date().getFullYear() - 5;
+  const urlOAI = `https://pantheon.ufrj.br/oai/request?verb=ListRecords&metadataPrefix=oai_dc&from=${anoBase}-01-01`;
+  const xmlStr = await fetchXML(urlOAI);
+  const kw = keyword.toLowerCase();
+  return parseOAIXML(xmlStr, "Pantheon — UFRJ")
+    .filter(r => r.titulo.toLowerCase().includes(kw) || r.resumo.toLowerCase().includes(kw))
+    .slice(0, maxResults);
+}
+
+// ── Dispatcher principal ───────────────────────────────────────────────────
+async function buscarTesesOAI(keyword, options = {}) {
+  const { repoId = "bdtd", maxResults = 20 } = options;
+  const repo = OAI_REPOSITORIES.find(r => r.id === repoId) || OAI_REPOSITORIES[0];
+  if (!keyword?.trim())
+    return [{ _erro: true, mensagem: "Informe um termo de busca.", fonte: repo.label }];
+  try {
+    let results;
+    if      (repo.id === "bdtd")    results = await buscarBDTD(keyword, maxResults);
+    else if (repo.id === "usp")     results = await buscarUSP(keyword, maxResults);
+    else if (repo.id === "unicamp") results = await buscarUNICAMP(keyword, maxResults);
+    else if (repo.id === "ufrj")    results = await buscarUFRJ(keyword, maxResults);
+    else                            results = await buscarBDTD(keyword, maxResults);
+    return results.length
+      ? results
+      : [{ _erro: true, mensagem: "Nenhum resultado encontrado. Tente outro termo.", fonte: repo.label }];
+  } catch (err) {
+    return [{ _erro: true, mensagem: err.message, fonte: repo.label }];
   }
 }
 
-async function buscarLegislacaoLexML(termo, options={}) {
-  const { tipo="todos", maxResults=20 } = options;
-  const tipoClause=tipo&&tipo!=="todos"?` and urn.local.tipo = "${tipo}"`:"";
-  const cql=encodeURIComponent(`(dc.title any ${termo} or dc.subject any ${termo})${tipoClause}`);
-  const url=`https://www.lexml.gov.br/busca/SRU?operation=searchRetrieve&version=1.2&query=${cql}&maximumRecords=${maxResults}&recordSchema=oai_dc`;
+async function buscarLegislacaoLexML(termo, options = {}) {
+  const { tipo = "todos", maxResults = 20 } = options;
+  const tipoClause = tipo && tipo !== "todos" ? ` and urn.local.tipo = "${tipo}"` : "";
+  // CQL query devidamente montado e encodado
+  const cqlRaw = `(dc.title any "${termo}" or dc.subject any "${termo}")${tipoClause}`;
+  const url = `https://www.lexml.gov.br/busca/SRU?operation=searchRetrieve&version=1.2&query=${encodeURIComponent(cqlRaw)}&maximumRecords=${maxResults}&recordSchema=oai_dc`;
   try {
-    let xmlStr;
-    try { const r=await fetch(url,{headers:{Accept:"application/xml, text/xml"}}); if(!r.ok) throw new Error(); xmlStr=await r.text(); }
-    catch { xmlStr=await fetchViaProxy(url); }
-    const doc=new DOMParser().parseFromString(xmlStr,"text/xml");
-    const records=[];
-    doc.querySelectorAll("recordData, record").forEach(item=>{
-      const dc=tag=>oaiClean(item.querySelector(`dc\\:${tag}, ${tag}`)?.textContent||"");
-      const dcAll=tag=>[...item.querySelectorAll(`dc\\:${tag}, ${tag}`)].map(e=>oaiClean(e.textContent));
-      const titulo=dc("title")||dc("identifier"); if(!titulo) return;
-      const ids=dcAll("identifier");
-      const urn=ids.find(s=>s.startsWith("urn:lex"))||"";
-      const urlH=ids.find(s=>s.startsWith("http"))||"";
-      records.push({ titulo, ementa:dc("description"), data:(dc("date")||"").slice(0,10), tipo:dc("type")||"Legislação", urn, url:urlH||(urn?`https://www.lexml.gov.br/urn/${encodeURIComponent(urn)}`:""), fonte:"LexML Brasil" });
+    // fetchXML já tenta direto → proxy 1 → proxy 2, com timeout em cada
+    const xmlStr = await fetchXML(url);
+    const doc = new DOMParser().parseFromString(xmlStr, "text/xml");
+    const records = [];
+    doc.querySelectorAll("recordData, record").forEach(item => {
+      const dc    = tag => oaiClean(item.querySelector(`dc\\:${tag}, ${tag}`)?.textContent || "");
+      const dcAll = tag => [...item.querySelectorAll(`dc\\:${tag}, ${tag}`)].map(e => oaiClean(e.textContent));
+      const titulo = dc("title") || dc("identifier"); if (!titulo) return;
+      const ids  = dcAll("identifier");
+      const urn  = ids.find(s => s.startsWith("urn:lex")) || "";
+      const urlH = ids.find(s => s.startsWith("http")) || "";
+      records.push({
+        titulo, ementa: dc("description"),
+        data:   (dc("date") || "").slice(0, 10),
+        tipo:   dc("type") || "Legislação",
+        urn,
+        url:    urlH || (urn ? `https://www.lexml.gov.br/urn/${encodeURIComponent(urn)}` : ""),
+        fonte:  "LexML Brasil",
+      });
     });
-    return records.slice(0,maxResults);
-  } catch(err) {
-    return [{ _erro:true, mensagem:err.message, fonte:"LexML Brasil" }];
+    return records.length
+      ? records.slice(0, maxResults)
+      : [{ _erro: true, mensagem: "Nenhuma legislação encontrada para este termo.", fonte: "LexML Brasil" }];
+  } catch (err) {
+    return [{ _erro: true, mensagem: err.message, fonte: "LexML Brasil" }];
   }
 }
 
