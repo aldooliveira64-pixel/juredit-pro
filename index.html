@@ -902,24 +902,78 @@ async function chamarClaudeFallback(messages, system, onStatus) {
   if(!text) throw new Error("Resposta vazia."); onStatus?.(""); return text;
 }
 
-async function chamarGemini(messages, system, apiKey, onStatus) {
-  if(!apiKey?.trim()) throw new Error("Cole a chave do Google AI Studio nas configurações.");
-  const MODELS=["gemini-2.5-flash","gemini-2.5-flash-preview-05-20","gemini-2.0-flash"];
-  for(const model of MODELS) {
-    for(let t=0;t<=2;t++) {
-      if(t>0){for(let s=30;s>0;s--){onStatus?.(`Gemini — ${s}s...`);await new Promise(r=>setTimeout(r,1000));}}
+async function chamarGemini(messages, system, apiKey, onStatus, onChunk) {
+  if (!apiKey?.trim()) throw new Error("Cole a chave do Google AI Studio nas configurações.");
+  const MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-preview-05-20", "gemini-2.0-flash"];
+
+  for (const model of MODELS) {
+    for (let t = 0; t <= 2; t++) {
+      if (t > 0) {
+        for (let s = 30; s > 0; s--) {
+          onStatus?.(`Gemini — aguardando ${s}s...`);
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
       onStatus?.(`🔮 Gemini (${model}) gerando...`);
       try {
-        const contents=messages.map(m=>({role:m.role==="assistant"?"model":"user",parts:[{text:m.content}]}));
-        const res=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey.trim()}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents,systemInstruction:{parts:[{text:system}]},generationConfig:{maxOutputTokens:8192,temperature:0.75}})});
-        if(res.status===404) break; if(res.status===429){if(t<2)continue;break;}
-        if(res.status===400){const e=await res.json().catch(()=>({}));if(e?.error?.message?.includes("API_KEY"))throw new Error("Chave Gemini inválida.");break;}
-        if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(`Gemini ${res.status}: ${e?.error?.message||res.statusText}`);}
-        const data=await res.json(); const text=data.candidates?.[0]?.content?.parts?.[0]?.text||"";
-        if(text){onStatus?.("");return text;} break;
-      } catch(e) {
-        if(e.message.includes("Failed to fetch")) throw new Error("Gemini bloqueado neste ambiente. Use Claude.");
-        if(t===2) throw e;
+        const contents = messages.map(m => ({
+          role: m.role === "assistant" ? "model" : "user",
+          parts: [{ text: typeof m.content === "string" ? m.content : JSON.stringify(m.content) }],
+        }));
+        const body = JSON.stringify({
+          contents,
+          systemInstruction: { parts: [{ text: system }] },
+          generationConfig: { maxOutputTokens: 8192, temperature: 0.75 },
+        });
+
+        // streamGenerateContent com SSE — paridade de UX com Claude
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?key=${apiKey.trim()}&alt=sse`,
+          { method: "POST", headers: { "Content-Type": "application/json" }, body }
+        );
+
+        if (res.status === 404) break;
+        if (res.status === 429) { if (t < 2) continue; break; }
+        if (res.status === 400) {
+          const e = await res.json().catch(() => ({}));
+          if (e?.error?.message?.includes("API_KEY")) throw new Error("Chave Gemini inválida.");
+          break;
+        }
+        if (!res.ok) {
+          const e = await res.json().catch(() => ({}));
+          throw new Error(`Gemini ${res.status}: ${e?.error?.message || res.statusText}`);
+        }
+
+        // Leitura do stream SSE linha a linha
+        const reader  = res.body.getReader();
+        const decoder = new TextDecoder();
+        let fullText = "";
+        let buffer   = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop(); // última linha pode estar incompleta
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const raw = line.slice(6).trim();
+            if (!raw || raw === "[DONE]") continue;
+            try {
+              const chunk = JSON.parse(raw);
+              const part  = chunk.candidates?.[0]?.content?.parts?.[0]?.text || "";
+              if (part) { fullText += part; onChunk?.(fullText); }
+            } catch { /* ignora chunks malformados */ }
+          }
+        }
+
+        if (fullText) { onStatus?.(""); return fullText; }
+        break;
+      } catch (e) {
+        if (e.message.includes("Failed to fetch"))
+          throw new Error("Gemini bloqueado neste ambiente. Use Claude.");
+        if (t === 2) throw e;
       }
     }
   }
@@ -1316,7 +1370,7 @@ function buildPromptCapitulo(cap, capAnterior, doutrina, juris, area, nivel, pro
 ${resumoCtx}${doutrinaCtx}${jurisCtx}
 
 ══ TAREFA ══
-Escreva o Capítulo ${cap.numero}: "${cap.titulo}" — mínimo 3.500 palavras.
+Escreva o Capítulo ${cap.numero}: "${cap.titulo}" — mínimo ${PALAVRAS_ALVO_CAP.toLocaleString("pt-BR")} palavras.
 Siga RIGOROSAMENTE o padrão tipográfico MALHEIROS/SARAIVA (modelo Barroso, Di Pietro).
 
 ══ ESTRUTURA OBRIGATÓRIA ══
@@ -2549,7 +2603,7 @@ function App() {
     setLoading(true);setStatus("");setStreamText("");
     try {
       let reply;
-      if(motor==="gemini"){reply=await chamarGemini(nh,buildSys(area,nivel,p),geminiKey,setStatus);}
+      if(motor==="gemini"){reply=await chamarGemini(nh,buildSys(area,nivel,p),geminiKey,setStatus,partial=>setStreamText(partial));}
       else{reply=await chamarClaudeStream(nh,buildSys(area,nivel,p),partial=>setStreamText(partial),setStatus);}
       setStreamText("");
       setHist(h=>[...h,{role:"assistant",content:reply}]);
@@ -2571,7 +2625,7 @@ function App() {
     const prompt=`Pesquise e cite jurisprudência atualizada STF e STJ (2020-2025) sobre: ${bTermo}\n\nPara cada precedente: número, tribunal, relator, turma, data, ementa resumida e tese. Mínimo 5 precedentes. Se não tiver certeza, use "o STJ tem decidido que..." — nunca invente.`;
     try {
       let text;
-      if(motor==="gemini"&&geminiKey?.trim()){text=await chamarGemini([{role:"user",content:prompt}],sys,geminiKey,()=>{});}
+      if(motor==="gemini"&&geminiKey?.trim()){text=await chamarGemini([{role:"user",content:prompt}],sys,geminiKey,()=>{},p=>setBResult(p));}
       else{text=await chamarClaudeStream([{role:"user",content:prompt}],sys,p=>setBResult(p),()=>{});}
       setBResult(text||"");
     } catch(e){let msg=e.message;if(msg.includes("Failed to fetch"))msg="Gemini bloqueado. Mude para Claude.";setBResult("⚠️ "+msg);}
@@ -3702,7 +3756,7 @@ function App() {
                 <div style={{fontSize:11,fontWeight:700,color:N}}>📚 Doutrina importada — {capituloAtivo.doutrina.length} fonte{capituloAtivo.doutrina.length!==1?"s":""}</div>
                 <button onClick={()=>{if(window.confirm("Limpar todas as fontes importadas?"))setCapituloAtivo({titulo:"Capítulo ativo",doutrina:[]});}} style={{fontSize:9,padding:"3px 8px",border:"1px solid #fca5a5",background:"transparent",color:"#b91c1c",borderRadius:3,cursor:"pointer",fontFamily:"monospace"}}>🗑 Limpar</button>
               </div>
-              <div style={{fontSize:11,color:TEXT2,lineHeight:1.8,fontFamily:"monospace",whiteSpace:"pre-wrap",maxHeight:200,overflowY:"auto",fontSize:10}}>
+              <div style={{fontSize:10,color:TEXT2,lineHeight:1.8,fontFamily:"monospace",whiteSpace:"pre-wrap",maxHeight:200,overflowY:"auto"}}>
                 {gerarBlocoRefDoutrina(capituloAtivo.doutrina)}
               </div>
               <button onClick={()=>hCopy(gerarBlocoRefDoutrina(capituloAtivo.doutrina),"refbloco")} style={{marginTop:8,...bOut(cpFb["refbloco"]?"#22c55e":BORDER,cpFb["refbloco"]?"#166534":TEXT2)}}>{cpFb["refbloco"]?"✓ Copiado!":"📋 Copiar Referências ABNT"}</button>
