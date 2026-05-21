@@ -128,30 +128,18 @@ async function gerarDocx(rawText, nomeLivro, proj) {
     { name: "word/footer1.xml", data: s2u(footerXml) }, { name: "word/_rels/document.xml.rels", data: s2u(rD) },
     { name: "word/footnotes.xml", data: s2u(footnotesXml) },
   ];
+  const zip = buildZip(files);
+  let bin = ""; const chunk = 8192;
+  for (let i = 0; i < zip.length; i += chunk) bin += String.fromCharCode(...zip.subarray(i, i + chunk));
+  const b64 = btoa(bin);
   const slug = (nomeLivro || "JurEditPro").replace(/[^a-zA-Z0-9]/g, "_").slice(0, 28);
   const fname = slug + "_" + new Date().toISOString().slice(0, 10) + ".docx";
-
-  // Usa JSZip (já carregado no <head>) com compressão DEFLATE — produz arquivos ~4× menores
-  let zipBlob;
-  if (typeof JSZip !== "undefined") {
-    const jz = new JSZip();
-    for (const f of files) {
-      const path = f.name;
-      // Os dois primeiros arquivos devem ir sem compressão (spec OOXML)
-      const noCompress = path === "[Content_Types].xml" || path === "_rels/.rels";
-      jz.file(path, f.data, { compression: noCompress ? "STORE" : "DEFLATE", compressionOptions: { level: 6 } });
-    }
-    zipBlob = await jz.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
-  } else {
-    // Fallback para engine manual (sem JSZip)
-    const zip = buildZip(files);
-    zipBlob = new Blob([zip], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
-  }
-  const url = URL.createObjectURL(zipBlob);
+  const dataUri = "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64," + b64;
+  let url; try { url = URL.createObjectURL(new Blob([zip], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" })); } catch (_) { url = dataUri; }
   const a = document.createElement("a"); a.href = url; a.download = fname; a.style.display = "none";
   document.body.appendChild(a); a.click();
-  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
-  return { filename: fname };
+  setTimeout(() => { document.body.removeChild(a); if (url !== dataUri) URL.revokeObjectURL(url); }, 1000);
+  return { dataUri, filename: fname };
 }
 
 function exportarMarkdown(text, nomeLivro) {
@@ -872,16 +860,14 @@ function SidebarDoutrina({ capitulo, onImportar, onFechar, onUsar, darkMode, are
 // ══════════════════════════════════════════════
 // MOTORES DE IA
 // ══════════════════════════════════════════════
-async function chamarClaudeStream(messages, system, onChunk, onStatus, claudeKey="") {
-  const headers={"Content-Type":"application/json","anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"};
-  if(claudeKey?.trim()) headers["x-api-key"]=claudeKey.trim();
+async function chamarClaudeStream(messages, system, onChunk, onStatus) {
   const WAITS = [15, 30, 60];
   for (let t = 0; t <= 3; t++) {
     if (t > 0) { for (let s = WAITS[t-1]; s > 0; s--) { onStatus?.(`Aguardando ${s}s (tentativa ${t+1}/4)...`); await new Promise(r => setTimeout(r, 1000)); } }
     onStatus?.(t === 0 ? "⚖️ Claude Sonnet 4 gerando..." : `🔄 Tentativa ${t+1}/4...`);
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST", headers,
+        method:"POST", headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01"},
         body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:16000, stream:true, system, messages }),
       });
       if (res.status===529||res.status===503) { if(t<3) continue; throw new Error("API sobrecarregada."); }
@@ -900,18 +886,16 @@ async function chamarClaudeStream(messages, system, onChunk, onStatus, claudeKey
       }
       if(full){onStatus?.("");return full;} if(t<3) continue; throw new Error("Resposta vazia.");
     } catch(e) {
-      if(e.message&&e.message.includes("stream")) return await chamarClaudeFallback(messages,system,onStatus,claudeKey);
+      if(e.message&&e.message.includes("stream")) return await chamarClaudeFallback(messages,system,onStatus);
       if(t===3) throw e;
     }
   }
   throw new Error("Falha após 4 tentativas.");
 }
 
-async function chamarClaudeFallback(messages, system, onStatus, claudeKey="") {
+async function chamarClaudeFallback(messages, system, onStatus) {
   onStatus?.("⚖️ Claude gerando (modo direto)...");
-  const headers={"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"};
-  if(claudeKey?.trim()) headers["x-api-key"]=claudeKey.trim();
-  const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers,body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:16000,system,messages})});
+  const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:16000,system,messages})});
   if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(`Erro ${res.status}: ${e?.error?.message||res.statusText}`);}
   const data=await res.json();
   const text=(data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("").trim();
@@ -1607,34 +1591,6 @@ function exportarTratadoPDF(capitulos, proj) {
   const refsHtml = refs ? `<div class="cap-break"><h2>REFERÊNCIAS</h2><pre style="font-family:Georgia;font-size:11pt;white-space:pre-wrap;line-height:1.8">${refs}</pre></div>` : "";
 
   const win = window.open("","_blank");
-  if(!win){
-    // Fallback: download HTML file quando popup bloqueado
-    const html=`<!DOCTYPE html><html><head><meta charset="UTF-8"/>
-  <title>${proj?.nome||"Tratado Jurídico"}</title>
-  <style>
-    @page{size:A4;margin:3cm 2.5cm 2.5cm 3cm}
-    *{box-sizing:border-box}
-    body{font-family:"Times New Roman",serif;font-size:12pt;line-height:1.5;color:#000;background:#fff}
-    h1{font-size:16pt;text-align:center;margin:2cm 0 1cm}
-    h2{font-size:14pt;text-align:center;margin:1.5cm 0 .5cm;text-transform:uppercase}
-    h3{font-size:13pt;text-align:center;margin:.5cm 0 1cm}
-    p{text-indent:1.25cm;text-align:justify;margin:.15cm 0}
-    blockquote{margin:1cm 4cm;font-style:italic;font-size:10pt;line-height:1.4}
-    .cap-break{page-break-before:always}
-    .cap-break:first-child{page-break-before:avoid}
-    strong{font-weight:bold}em{font-style:italic}
-  </style></head><body>
-  <h1>${proj?.nome||"Tratado Jurídico"}</h1>
-  ${proj?.area?`<p style="text-align:center;font-style:italic">${proj.area}</p>`:""}
-  ${body}${refsHtml}
-  <script>window.onload=()=>{window.print();}<\/script>
-  </body></html>`;
-    const blob=new Blob([html],{type:"text/html;charset=utf-8"});
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement("a");a.href=url;a.download=(proj?.nome||"tratado").replace(/[^a-z0-9]/gi,"_").slice(0,40)+"_impressao.html";
-    document.body.appendChild(a);a.click();setTimeout(()=>{document.body.removeChild(a);URL.revokeObjectURL(url);},1000);
-    return;
-  }
   win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/>
   <title>${proj?.nome||"Tratado Jurídico"}</title>
   <style>
@@ -2408,7 +2364,6 @@ function App() {
 
   const [motor,setMotor]=useState(()=>load("jep:motor","claude"));
   const [geminiKey,setGeminiKey]=useState(()=>{ try{return localStorage.getItem("jep:gkey")||"";}catch{return "";} });
-  const [claudeKey,setClaudeKey]=useState(()=>{ try{return localStorage.getItem("jep:ckey")||"";}catch{return "";} });
   const [showCfg,setShowCfg]=useState(false);
   const [showKey,setShowKey]=useState(false);
   const [darkMode,setDarkMode]=useState(()=>load("jep:dark",false));
@@ -2473,7 +2428,6 @@ function App() {
 
   useEffect(()=>{document.body.className=darkMode?"dark":"";save("jep:dark",darkMode);},[darkMode]);
   useEffect(()=>{ try{localStorage.setItem("jep:gkey",geminiKey);}catch{} },[geminiKey]);
-  useEffect(()=>{ try{localStorage.setItem("jep:ckey",claudeKey);}catch{} },[claudeKey]);
   useEffect(()=>save("jep:motor",motor),[motor]);
   useEffect(()=>save("jep:proj",proj),[proj]);
   useEffect(()=>save("jep:area",area),[area]);
@@ -2587,7 +2541,7 @@ function App() {
       let reply = "";
       await chamarClaudeStream([{role:"user",content:prompt}], sys,
         partial => { reply=partial; atualizarCap(cap.id,{texto:partial,progresso:calcularProgresso(partial)}); },
-        setStatus, claudeKey
+        setStatus
       );
       atualizarCap(cap.id,{texto:reply,progresso:calcularProgresso(reply),gerando:false,ts:Date.now()});
       setHist(h=>[...h,{role:"user",content:prompt},{role:"assistant",content:reply}]);
@@ -2650,7 +2604,7 @@ function App() {
     try {
       let reply;
       if(motor==="gemini"){reply=await chamarGemini(nh,buildSys(area,nivel,p),geminiKey,setStatus,partial=>setStreamText(partial));}
-      else{reply=await chamarClaudeStream(nh,buildSys(area,nivel,p),partial=>setStreamText(partial),setStatus,claudeKey);}
+      else{reply=await chamarClaudeStream(nh,buildSys(area,nivel,p),partial=>setStreamText(partial),setStatus);}
       setStreamText("");
       setHist(h=>[...h,{role:"assistant",content:reply}]);
       setMsgs(m=>[...m,{role:"assistant",text:reply,motor,ts:Date.now()}]);
@@ -2672,7 +2626,7 @@ function App() {
     try {
       let text;
       if(motor==="gemini"&&geminiKey?.trim()){text=await chamarGemini([{role:"user",content:prompt}],sys,geminiKey,()=>{},p=>setBResult(p));}
-      else{text=await chamarClaudeStream([{role:"user",content:prompt}],sys,p=>setBResult(p),()=>{},claudeKey);}
+      else{text=await chamarClaudeStream([{role:"user",content:prompt}],sys,p=>setBResult(p),()=>{});}
       setBResult(text||"");
     } catch(e){let msg=e.message;if(msg.includes("Failed to fetch"))msg="Gemini bloqueado. Mude para Claude.";setBResult("⚠️ "+msg);}
     setBLoad(false);
@@ -2686,7 +2640,7 @@ function App() {
     const sys=`Você é especialista em pesquisa jurídica acadêmica e normas ABNT. Área: ${area}. Responda sempre em português. Jamais invente referências, autores ou obras específicas.`;
     const prompt=buildBiblioPrompt(biblioModo,termo,area);
     try {
-      const text=await chamarClaudeStream([{role:"user",content:prompt}],sys,partial=>setBiblioStream(partial),()=>{},claudeKey);
+      const text=await chamarClaudeStream([{role:"user",content:prompt}],sys,partial=>setBiblioStream(partial),()=>{});
       setBiblioStream("");setBiblioResult(text||"");
     } catch(e){setBiblioStream("");setBiblioResult("⚠️ "+e.message);}
     setBiblioLoading(false);
@@ -2799,22 +2753,15 @@ function App() {
         <div style={{background:darkMode?"#070f1c":"#07101e",borderBottom:"1px solid rgba(201,168,76,.2)",padding:"10px 18px",display:"flex",gap:12,alignItems:"flex-start",flexWrap:"wrap",flexShrink:0}}>
           <div style={{background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",borderRadius:6,padding:"8px 12px",minWidth:180}}>
             <div style={{fontSize:9,color:G,fontFamily:"monospace",marginBottom:5,textTransform:"uppercase",letterSpacing:".08em"}}>Motor ativo</div>
-            {motor==="claude"?(<div><div style={{fontSize:12,color:claudeKey?"#4ade80":"#fca5a5",fontWeight:700}}>{claudeKey?"✓ Claude Sonnet 4 · chave OK":"⚠ Claude — cole a chave abaixo"}</div><div style={{fontSize:9,color:"rgba(255,255,255,.4)",fontFamily:"monospace",marginTop:2}}>Streaming em tempo real.</div></div>):(
+            {motor==="claude"?(<div><div style={{fontSize:12,color:"#4ade80",fontWeight:700}}>✓ Claude Sonnet 4 · streaming</div><div style={{fontSize:9,color:"rgba(255,255,255,.4)",fontFamily:"monospace",marginTop:2}}>Texto em tempo real. Sem chave.</div></div>):(
               <div><div style={{fontSize:12,color:geminiKey?"#4ade80":"#fca5a5",fontWeight:700}}>{geminiKey?"✓ Gemini 2.5 Flash":"⚠ Sem chave"}</div><div style={{fontSize:9,color:"rgba(255,255,255,.4)",fontFamily:"monospace",marginTop:2}}>Requer chave Google AI Studio.</div></div>
             )}
           </div>
           <div style={{flex:1,minWidth:220}}>
-            <div style={{fontSize:9,color:G,fontFamily:"monospace",marginBottom:5,textTransform:"uppercase",letterSpacing:".08em"}}>🔑 Chave Anthropic API (Claude — standalone)</div>
-            <div style={{display:"flex",gap:5}}>
-              <input type={showKey?"text":"password"} value={claudeKey} onChange={e=>setClaudeKey(e.target.value)} placeholder="sk-ant-... (obtenha em console.anthropic.com)" style={{flex:1,padding:"6px 9px",border:`1px solid ${claudeKey?"rgba(74,222,128,.4)":"rgba(201,168,76,.3)"}`,borderRadius:4,background:"rgba(255,255,255,.07)",color:"white",fontFamily:"monospace",fontSize:11,outline:"none"}}/>
-              <button onClick={()=>setShowKey(!showKey)} style={{padding:"6px 8px",background:"rgba(255,255,255,.07)",border:"1px solid rgba(255,255,255,.12)",color:"#ccc",borderRadius:4,cursor:"pointer",fontSize:12}}>{showKey?"🙈":"👁"}</button>
-            </div>
-            <div style={{fontSize:8,color:"rgba(255,255,255,.3)",fontFamily:"monospace",marginTop:3}}>Sem chave: funciona normalmente dentro do claude.ai. Com chave: funciona em qualquer browser.</div>
-          </div>
-          <div style={{flex:1,minWidth:220}}>
             <div style={{fontSize:9,color:G,fontFamily:"monospace",marginBottom:5,textTransform:"uppercase",letterSpacing:".08em"}}>🔑 Chave Google AI Studio (Gemini — opcional)</div>
             <div style={{display:"flex",gap:5}}>
-              <input type={showKey?"text":"password"} value={geminiKey} onChange={e=>setGeminiKey(e.target.value)} placeholder="AIzaSy... (opcional)" style={{flex:1,padding:"6px 9px",border:"1px solid rgba(201,168,76,.3)",borderRadius:4,background:"rgba(255,255,255,.07)",color:"white",fontFamily:"monospace",fontSize:11,outline:"none"}}/>
+              <input type={showKey?"text":"password"} value={geminiKey} onChange={e=>setGeminiKey(e.target.value)} placeholder="AIzaSy... (opcional — Claude funciona sem chave)" style={{flex:1,padding:"6px 9px",border:"1px solid rgba(201,168,76,.3)",borderRadius:4,background:"rgba(255,255,255,.07)",color:"white",fontFamily:"monospace",fontSize:11,outline:"none"}}/>
+              <button onClick={()=>setShowKey(!showKey)} style={{padding:"6px 8px",background:"rgba(255,255,255,.07)",border:"1px solid rgba(255,255,255,.12)",color:"#ccc",borderRadius:4,cursor:"pointer",fontSize:12}}>{showKey?"🙈":"👁"}</button>
             </div>
           </div>
           <button onClick={()=>setShowCfg(false)} style={{padding:"6px 13px",background:"rgba(34,197,94,.2)",border:"1px solid rgba(34,197,94,.4)",color:"#4ade80",borderRadius:4,cursor:"pointer",fontSize:10,fontFamily:"monospace",marginTop:2}}>✓ Fechar</button>
