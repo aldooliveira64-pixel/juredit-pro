@@ -981,11 +981,559 @@ async function chamarGemini(messages, system, apiKey, onStatus, onChunk) {
 }
 
 // ══════════════════════════════════════════════
+// JURSUMARIO — componente dedicado (v5 JSX → HTML)
+// ══════════════════════════════════════════════
+
+const SUM_TAGS_INIT = [
+  { val:"Capa",                  label:"Capa",            on:false },
+  { val:"Folha de Rosto",        label:"Folha de Rosto",  on:false },
+  { val:"Resumo e Abstract",     label:"Resumo/Abstract", on:true  },
+  { val:"Lista de Abreviaturas", label:"Abreviaturas",    on:false },
+  { val:"Lista de Figuras",      label:"Lista de Figuras",on:false },
+  { val:"Lista de Tabelas",      label:"Lista de Tabelas",on:false },
+  { val:"Introducao",            label:"Introdução",      on:true  },
+  { val:"Referencias Bibliograficas", label:"Referências",on:true  },
+  { val:"Apendice",              label:"Apêndice",        on:false },
+  { val:"Anexos",                label:"Anexos",          on:false },
+  { val:"Glossario Juridico",    label:"Glossário",       on:false },
+  { val:"Agradecimentos",        label:"Agradecimentos",  on:false },
+  { val:"Dedicatoria",           label:"Dedicatória",     on:false },
+];
+
+const SUM_MODELOS = {
+  tese:{
+    titulo:"Responsabilidade Civil do Estado por Atos Omissivos na Saúde Pública",
+    tipo:"Tese de Doutorado", area:"Direito Administrativo e Constitucional",
+    subtema:"Omissão estatal e dano ao usuário do SUS pós-pandemia 2020-2025",
+    descricao:"Investigação sobre responsabilidade extracontratual do Estado por omissões na saúde pública. Análise do STF e STJ 2020-2025, teoria do risco administrativo, nexo de causalidade e direitos fundamentais sociais.",
+    capitulos:"8", paginas:"280", estilo:"academico formal ABNT", doutrina:"2020-2025 atualizada",
+    instrucao:"Incluir RE 1.171.152 STF e REsp 1.869.043 STJ. Abordar ADPF 709.",
+  },
+  monografia:{
+    titulo:"A Aplicação da LGPD nas Relações de Emprego",
+    tipo:"TCC / Monografia", area:"Direito do Trabalho e Direito Digital",
+    subtema:"LGPD e monitoramento de trabalhadores em ambiente digital",
+    descricao:"Limites do poder diretivo do empregador frente à LGPD Lei 13709/2018. Tratamento de dados pessoais no contrato de trabalho, consentimento, bases legais e decisões da ANPD.",
+    capitulos:"5", paginas:"70", estilo:"academico formal ABNT", doutrina:"2020-2025 atualizada",
+    instrucao:"Enunciado 46 da 2ª Jornada de Direito Material do Trabalho. Jurisprudência TST sobre monitoramento de e-mails.",
+  },
+  livro:{
+    titulo:"Tratado de Direito Civil Contemporâneo — Obrigações e Contratos",
+    tipo:"Livro / Tratado", area:"Direito Civil",
+    subtema:"Contratos digitais, NFTs e obrigações no ambiente virtual",
+    descricao:"Obra de referência sobre obrigações e contratos no Brasil. Teoria geral, modalidades, extinção, contratos digitais, smart contracts e criptomoedas. Jurisprudência STJ 2015-2025.",
+    capitulos:"12", paginas:"600", estilo:"juridico tecnico", doutrina:"classica e contemporanea",
+    instrucao:"Glossário jurídico e índice remissivo ao final. Síntese conclusiva integrada em cada capítulo.",
+  },
+  parecer:{
+    titulo:"Parecer sobre Constitucionalidade da Tributação de Criptoativos",
+    tipo:"Parecer Jurídico", area:"Direito Tributário e Constitucional",
+    subtema:"Tributação de Bitcoin e tokens pela Receita Federal",
+    descricao:"Análise da IN RFB 1888/2019 e Lei 14478/2022. Competência tributária, fato gerador do IRPF sobre criptomoedas e legalidade das obrigações acessórias das exchanges.",
+    capitulos:"6", paginas:"40", estilo:"juridico tecnico", doutrina:"2020-2025 atualizada",
+    instrucao:"Estrutura: Ementa, Consulta, Relatório, Fundamentação, Conclusão integrada. Citar ARE 1.258.434 e posição do CARF.",
+  },
+  artigo:{
+    titulo:"Dano Existencial no Direito do Trabalho: Análise Jurisprudencial 2020-2025",
+    tipo:"Artigo Científico", area:"Direito do Trabalho",
+    subtema:"Dano existencial por jornada excessiva e critérios de quantificação",
+    descricao:"Conceito de dano existencial, distinção do dano moral e critérios de quantificação pelo TST 2020-2025. Revisão bibliográfica e análise de julgados.",
+    capitulos:"5", paginas:"25", estilo:"academico formal ABNT", doutrina:"2020-2025 atualizada",
+    instrucao:"Estrutura ABNT: Introdução, Referencial Teórico, Metodologia, Resultados, Síntese conclusiva integrada.",
+  },
+  ebook:{
+    titulo:"Direitos do Consumidor no E-commerce: Guia Prático 2025",
+    tipo:"E-book", area:"Direito do Consumidor e Direito Digital",
+    subtema:"CDC, Marco Civil e LGPD no comércio eletrônico",
+    descricao:"Direitos nas relações de consumo online. Arrependimento, entrega, privacidade, cancelamento, chargebacks e casos do Procon e STJ.",
+    capitulos:"8", paginas:"120", estilo:"didatico acessivel", doutrina:"2020-2025 atualizada",
+    instrucao:"Linguagem acessível ao leigo. Exemplos práticos em cada capítulo.",
+  },
+};
+
+function sumLimpar(text){
+  return text
+    .replace(/={3,}/g,"").replace(/\*{3,}/g,"").replace(/#{1,6} /gm,"")
+    .replace(/\*\*(.*?)\*\*/g,"$1").replace(/\*(.*?)\*/g,"$1")
+    .replace(/[\u{1F300}-\u{1FFFF}]/gu,"").replace(/[\u2500-\u257F]/g,"-")
+    .replace(/\n{3,}/g,"\n\n").trim();
+}
+
+function SumTag({label,on,onClick}){
+  return React.createElement("button",{onClick,style:{
+    fontSize:11,padding:"4px 11px",borderRadius:20,
+    border:`1px solid ${on?"#c8a96e":"#2e3447"}`,
+    background:on?"rgba(200,169,110,0.12)":"#141720",
+    color:on?"#e8cfa0":"#7a8099",
+    cursor:"pointer",fontFamily:"inherit",fontWeight:on?600:400,
+  }},label);
+}
+
+function SumLabel({children}){
+  return React.createElement("div",{style:{
+    fontFamily:"monospace",fontSize:10,letterSpacing:"0.16em",
+    textTransform:"uppercase",color:"#c8a96e",fontWeight:500,
+    marginBottom:16,display:"flex",alignItems:"center",gap:10,
+  }},children,React.createElement("span",{style:{flex:1,height:1,background:"#252a38"}}));
+}
+
+function SumBtn({children,color,onClick}){
+  return React.createElement("button",{onClick,style:{
+    fontSize:12,padding:"6px 14px",borderRadius:7,
+    border:`1px solid ${color||"#2e3447"}`,
+    background:"transparent",color:color||"#a8b0c8",
+    cursor:"pointer",fontFamily:"inherit",
+  }},children);
+}
+
+function JurSumario(){
+  const {useState:uS,useCallback:uC,useRef:uR,useEffect:uE}=React;
+  const [subTab,setSubTab]=uS("editor");
+  const [titulo,setTitulo]=uS("");
+  const [tipo,setTipo]=uS("");
+  const [area,setArea]=uS("");
+  const [subtema,setSubtema]=uS("");
+  const [descricao,setDescricao]=uS("");
+  const [capitulos,setCapitulos]=uS("");
+  const [paginas,setPaginas]=uS("");
+  const [ano,setAno]=uS("2025");
+  const [formato,setFormato]=uS("ABNT 1/1.1/1.1.1");
+  const [nivel,setNivel]=uS("3 niveis: capitulo/secao/subsecao");
+  const [estilo,setEstilo]=uS("academico formal ABNT");
+  const [doutrina,setDoutrina]=uS("2020-2025 atualizada");
+  const [instrucao,setInstrucao]=uS("");
+  const [tags,setTags]=uS(SUM_TAGS_INIT);
+  const [output,setOutput]=uS("");
+  const [loading,setLoading]=uS(false);
+  const [copied,setCopied]=uS(false);
+  const [erro,setErro]=uS("");
+  // barra de progresso fixa pós-geração
+  const [barraFixa,setBarraFixa]=uS(false);
+  const [progresso,setProgresso]=uS(0); // 0-100
+  const [etapa,setEtapa]=uS("");
+  const outputRef=uR(null);
+
+  const toggleTag=(i)=>setTags(prev=>prev.map((t,idx)=>idx===i?{...t,on:!t.on}:t));
+  const secoes=tags.filter(t=>t.on).map(t=>t.val);
+
+  const carregar=(key)=>{
+    const m=SUM_MODELOS[key];
+    if(!m)return;
+    setTitulo(m.titulo);setTipo(m.tipo);setArea(m.area);
+    setSubtema(m.subtema);setDescricao(m.descricao);
+    setCapitulos(m.capitulos);setPaginas(m.paginas);
+    setEstilo(m.estilo);setDoutrina(m.doutrina);
+    setInstrucao(m.instrucao);
+    setSubTab("editor");
+  };
+
+  const buildPrompt=()=>{
+    let p="Você é especialista em documentos acadêmicos, jurídicos e editoriais brasileiros de alto nível.\n";
+    p+="Gere um SUMÁRIO COMPLETO, PROFISSIONAL e PRONTO PARA USO.\n\n";
+    p+=`DADOS DO DOCUMENTO\nTítulo: ${titulo||"Não informado"}\nTipo: ${tipo||"Documento acadêmico"}\nÁrea: ${area||"Não informada"}\n`;
+    if(subtema)p+=`Subtema: ${subtema}\n`;
+    if(paginas)p+=`Páginas: ${paginas}\n`;
+    p+=capitulos?`Capítulos: ${capitulos}\n`:"Defina o número ideal de capítulos\n";
+    p+=`Ano: ${ano}\nEstilo: ${estilo}\nDoutrina: ${doutrina}\n`;
+    p+=`\nConteúdo:\n${descricao||"Infira pelo título"}\n`;
+    if(instrucao)p+=`\nInstruções: ${instrucao}\n`;
+    p+=`\nCONFIGURAÇÕES\nNumeração: ${formato}\nProfundidade: ${nivel}\nSeções fixas: ${secoes.length?secoes.join(", "):"nenhuma"}\n`;
+    p+="\nREGRAS OBRIGATÓRIAS\n";
+    p+="- Texto simples. PROIBIDO markdown (##,**,*,---,===) e emojis.\n";
+    p+="- Separadores: linha em branco ou hifens (----------).\n";
+    p+="- Indentação: 4 espaços por nível hierárquico.\n";
+    p+="- Sumário INTEIRO sem cortes.\n";
+    p+="- Títulos reais e específicos ao tema.\n";
+    p+="- Mínimo 3 seções por capítulo, 2 subseções por seção.\n";
+    p+="- Número de página estimado com ponteamento em cada entrada.\n";
+    p+="  Exemplo: 1.2 Teoria da imputação objetiva.........47\n";
+    p+="- Seções pré-textuais sem número. Pós-textuais após o último capítulo.\n";
+    p+="- NÃO crie capítulo separado chamado Conclusão.\n";
+    p+="- A conclusão é a última subseção do último capítulo, com título substantivo.\n";
+    p+="- Ao final: ---------- e 'Notas sobre a estrutura:' com 4 linhas explicativas.\n";
+    p+="\nGere o sumário agora:";
+    return p;
+  };
+
+  // Simula etapas de progresso durante geração
+  const simularProgresso=()=>{
+    const etapas=[
+      [5,"Analisando estrutura do documento..."],
+      [18,"Definindo seções pré-textuais..."],
+      [32,"Gerando capítulos principais..."],
+      [50,"Expandindo seções e subseções..."],
+      [68,"Inserindo paginação estimada..."],
+      [82,"Adicionando seções pós-textuais..."],
+      [92,"Revisando hierarquia ABNT..."],
+      [98,"Finalizando sumário..."],
+    ];
+    let i=0;
+    const tick=()=>{
+      if(i<etapas.length){
+        setProgresso(etapas[i][0]);
+        setEtapa(etapas[i][1]);
+        i++;
+        setTimeout(tick,900+Math.random()*600);
+      }
+    };
+    tick();
+  };
+
+  const gerar=uC(async()=>{
+    if(!titulo&&!descricao){setErro("Preencha ao menos o Título ou a Descrição.");return;}
+    setErro("");setLoading(true);setOutput("");setBarraFixa(false);setProgresso(0);setEtapa("");
+    simularProgresso();
+    try{
+      const res=await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST",
+        headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
+        body:JSON.stringify({
+          model:"claude-sonnet-4-20250514",
+          max_tokens:8000,
+          messages:[{role:"user",content:buildPrompt()}],
+        }),
+      });
+      const data=await res.json();
+      if(!res.ok)throw new Error(data?.error?.message||`Erro ${res.status}`);
+      const text=data?.content?.[0]?.text||"";
+      if(!text)throw new Error("Resposta vazia.");
+      const limpo=sumLimpar(text);
+      setOutput(limpo);
+      setProgresso(100);
+      setEtapa("Sumário gerado com sucesso!");
+      setBarraFixa(true);
+      setTimeout(()=>outputRef.current?.scrollIntoView({behavior:"smooth",block:"start"}),100);
+    }catch(e){
+      setErro("Erro: "+(e.message||"verifique a conexão."));
+      setBarraFixa(false);
+    }
+    setLoading(false);
+  },[titulo,tipo,area,subtema,descricao,capitulos,paginas,ano,formato,nivel,estilo,doutrina,instrucao,tags]);
+
+  const fallbackCopy=(texto)=>{
+    const ta=document.createElement("textarea");
+    ta.value=texto;ta.style.cssText="position:fixed;top:0;left:0;opacity:0;pointer-events:none";
+    document.body.appendChild(ta);ta.focus();ta.select();
+    try{document.execCommand("copy");setCopied(true);setTimeout(()=>setCopied(false),2500);}
+    catch(_){alert("Selecione o texto manualmente e pressione Ctrl+C.");}
+    document.body.removeChild(ta);
+  };
+
+  const copiar=uC(()=>{
+    if(!output)return;
+    if(navigator.clipboard&&navigator.clipboard.writeText)
+      navigator.clipboard.writeText(output)
+        .then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2500);})
+        .catch(()=>fallbackCopy(output));
+    else fallbackCopy(output);
+  },[output]);
+
+  const baixar=(ext)=>{
+    const nome=(titulo||"sumario").replace(/[^\w ]/g,"").trim().replace(/ +/g,"_").substring(0,60);
+    let content,type,filename;
+    if(ext==="txt"){
+      content=`${titulo.toUpperCase()}\n${tipo}\n${area}\n\n${output}`;
+      type="text/plain;charset=utf-8";filename=`${nome}_sumario.txt`;
+    }else{
+      const esc=output.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+      content=`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><title>Sumário</title>
+<style>body{font-family:"Times New Roman",serif;max-width:820px;margin:60px auto;padding:0 60px;line-height:2.2;color:#111}
+h1{text-align:center;font-size:1.4rem;text-transform:uppercase;margin-bottom:4px}
+h2{text-align:center;font-size:.95rem;color:#555;font-weight:normal;margin-bottom:40px}
+hr{border:none;border-top:1px solid #bbb;margin:30px 0}
+pre{white-space:pre-wrap;font-family:"Times New Roman",serif;font-size:1rem;line-height:2.2}
+@media print{body{margin:40px;padding:40px}}</style>
+</head><body>
+<h1>${titulo}</h1><h2>${tipo}${area?" — "+area:""}</h2><hr>
+<pre>${esc}</pre></body></html>`;
+      type="text/html;charset=utf-8";filename=`${nome}_sumario.html`;
+    }
+    const blob=new Blob([content],{type});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;a.download=filename;a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Cores alinhadas ao tema do HTML (gold/dark)
+  const SC={
+    bg:"#08090c",s1:"#0e1016",s2:"#141720",s3:"#1a1e2a",
+    bd:"#252a38",bd2:"#2e3447",
+    gold:"#c8a96e",gold2:"#e8cfa0",gold3:"rgba(200,169,110,0.12)",
+    tx:"#eeeade",mt:"#7a8099",mt2:"#a8b0c8",
+    gr:"#5aad7a",rd:"#c05a5a",bl:"#5a8fc0",
+  };
+  const sinp={fontFamily:"inherit",fontSize:13,color:SC.tx,background:SC.s2,border:`1px solid ${SC.bd}`,borderRadius:8,padding:"8px 11px",width:"100%",outline:"none"};
+  const card={background:SC.s1,border:`1px solid ${SC.bd}`,borderRadius:10,padding:22,marginBottom:12};
+  const g2={display:"grid",gridTemplateColumns:"1fr 1fr",gap:11,marginBottom:11};
+  const g3={display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:11,marginBottom:11};
+  const fl={fontSize:11,color:SC.mt,marginBottom:5,display:"block"};
+
+  const SUBTABS=["editor","modelos","como"];
+  const SUBTAB_LABELS=["Editor","Modelos","Como usar"];
+
+  // ── BARRA FIXA DE PROGRESSO (pós-geração)
+  const BarraFixa=barraFixa&&React.createElement("div",{style:{
+    position:"sticky",top:0,zIndex:100,
+    background:`linear-gradient(90deg,${SC.s1},#0b0e1a)`,
+    border:`1px solid ${SC.bd}`,borderRadius:8,
+    padding:"10px 18px",marginBottom:16,
+    display:"flex",flexDirection:"column",gap:6,
+    boxShadow:"0 4px 20px rgba(0,0,0,.5)",
+  }},
+    React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},
+      React.createElement("span",{style:{fontSize:11,fontFamily:"monospace",color:SC.gold,letterSpacing:".1em"}},
+        progresso<100?"⏳ GERANDO SUMÁRIO":"✅ SUMÁRIO GERADO"
+      ),
+      React.createElement("div",{style:{display:"flex",gap:8,alignItems:"center"}},
+        React.createElement("span",{style:{fontSize:10,color:progresso<100?SC.mt:SC.gr,fontFamily:"monospace"}},
+          progresso<100?etapa:"Pronto para uso"
+        ),
+        React.createElement("span",{style:{fontSize:11,fontWeight:700,color:progresso===100?SC.gr:SC.gold2,fontFamily:"monospace"}},
+          `${progresso}%`
+        ),
+        barraFixa&&React.createElement("button",{
+          onClick:()=>setBarraFixa(false),
+          style:{fontSize:10,padding:"2px 8px",border:`1px solid ${SC.bd2}`,background:"transparent",color:SC.mt,borderRadius:4,cursor:"pointer",fontFamily:"monospace"}
+        },"✕ fechar")
+      )
+    ),
+    React.createElement("div",{style:{height:4,background:SC.bd,borderRadius:2,overflow:"hidden"}},
+      React.createElement("div",{style:{
+        height:"100%",borderRadius:2,
+        width:`${progresso}%`,
+        background:progresso===100?`linear-gradient(90deg,${SC.gr},#4ade80)`:`linear-gradient(90deg,${SC.gold},#e8cfa0)`,
+        transition:"width .4s ease",
+      }})
+    ),
+    progresso===100&&React.createElement("div",{style:{display:"flex",gap:8,marginTop:2}},
+      React.createElement("button",{onClick:copiar,style:{fontSize:10,padding:"3px 11px",border:`1px solid ${copied?"#5aad7a":SC.bd2}`,background:"transparent",color:copied?"#5aad7a":SC.mt2,borderRadius:5,cursor:"pointer",fontFamily:"monospace"}},
+        copied?"✓ Copiado!":"📋 Copiar sumário"
+      ),
+      React.createElement("button",{onClick:()=>baixar("txt"),style:{fontSize:10,padding:"3px 11px",border:`1px solid ${SC.bl}`,background:"transparent",color:SC.bl,borderRadius:5,cursor:"pointer",fontFamily:"monospace"}},
+        "↓ .txt"
+      ),
+      React.createElement("button",{onClick:()=>baixar("html"),style:{fontSize:10,padding:"3px 11px",border:"1px solid #9b7fd5",background:"transparent",color:"#9b7fd5",borderRadius:5,cursor:"pointer",fontFamily:"monospace"}},
+        "↓ .html"
+      ),
+      React.createElement("button",{onClick:()=>{setOutput("");setErro("");setBarraFixa(false);setProgresso(0);},style:{fontSize:10,padding:"3px 11px",border:`1px solid ${SC.bd2}`,background:"transparent",color:SC.mt,borderRadius:5,cursor:"pointer",fontFamily:"monospace"}},
+        "🔄 Novo"
+      )
+    )
+  );
+
+  return React.createElement("div",{style:{background:SC.bg,minHeight:"100%",fontFamily:"'Outfit',system-ui,sans-serif",color:SC.tx,padding:"0 0 60px",backgroundImage:"radial-gradient(ellipse 60% 40% at 50% 0%,rgba(200,169,110,0.06) 0%,transparent 70%)"}},
+
+    /* BARRA FIXA TOPO */
+    BarraFixa,
+
+    /* HEADER */
+    React.createElement("div",{style:{textAlign:"center",padding:"24px 20px 16px"}},
+      React.createElement("div",{style:{display:"inline-block",fontFamily:"monospace",fontSize:10,letterSpacing:"0.2em",textTransform:"uppercase",color:SC.gold,border:"1px solid rgba(200,169,110,.3)",borderRadius:20,padding:"3px 14px",marginBottom:10}},
+        "v 5.0 — Gerador Dedicado"
+      ),
+      React.createElement("h2",{style:{fontFamily:"Georgia,serif",fontSize:"1.6rem",color:SC.gold2,fontWeight:600,margin:"0 0 4px"}},
+        "JurSumário"
+      ),
+      React.createElement("p",{style:{color:SC.mt2,fontSize:"0.78rem",fontWeight:300,margin:0}},
+        "Sumário profissional para livros, monografias e documentos jurídicos"
+      )
+    ),
+
+    /* SUBTABS */
+    React.createElement("div",{style:{display:"flex",justifyContent:"center",gap:4,margin:"0 16px 16px",background:SC.s1,border:`1px solid ${SC.bd}`,borderRadius:12,padding:4,maxWidth:680,marginLeft:"auto",marginRight:"auto"}},
+      SUBTABS.map((t,i)=>React.createElement("div",{key:t,onClick:()=>setSubTab(t),style:{
+        flex:1,padding:"8px",textAlign:"center",fontSize:"0.76rem",fontWeight:500,
+        borderRadius:9,cursor:"pointer",color:subTab===t?SC.gold2:SC.mt,
+        background:subTab===t?SC.s3:"transparent",
+        border:subTab===t?`1px solid ${SC.bd2}`:"1px solid transparent",
+      }},SUBTAB_LABELS[i]))
+    ),
+
+    React.createElement("div",{style:{maxWidth:680,margin:"0 auto",padding:"0 14px"}},
+
+      /* ── EDITOR ── */
+      subTab==="editor"&&React.createElement(React.Fragment,null,
+        React.createElement("div",{style:card},
+          React.createElement(SumLabel,null,"Identificação do documento"),
+          React.createElement("div",{style:g2},
+            React.createElement("div",null,React.createElement("label",{style:fl},"Título principal *"),React.createElement("input",{style:sinp,value:titulo,onChange:e=>setTitulo(e.target.value),placeholder:"Ex: Responsabilidade Civil nos Contratos Digitais"})),
+            React.createElement("div",null,React.createElement("label",{style:fl},"Tipo de obra"),React.createElement("select",{style:sinp,value:tipo,onChange:e=>setTipo(e.target.value)},
+              React.createElement("option",{value:""},"Selecionar..."),
+              React.createElement("optgroup",{label:"Acadêmico"},
+                React.createElement("option",null,"TCC / Monografia"),
+                React.createElement("option",null,"Dissertação de Mestrado"),
+                React.createElement("option",null,"Tese de Doutorado"),
+                React.createElement("option",null,"Artigo Científico"),
+              ),
+              React.createElement("optgroup",{label:"Jurídico"},
+                React.createElement("option",null,"Petição Inicial"),
+                React.createElement("option",null,"Parecer Jurídico"),
+                React.createElement("option",null,"Memorial de Defesa"),
+                React.createElement("option",null,"Manual Jurídico"),
+              ),
+              React.createElement("optgroup",{label:"Editorial"},
+                React.createElement("option",null,"Livro / Tratado"),
+                React.createElement("option",null,"E-book"),
+                React.createElement("option",null,"Relatório Técnico"),
+                React.createElement("option",null,"Projeto / Proposta"),
+              )
+            ))
+          ),
+          React.createElement("div",{style:g2},
+            React.createElement("div",null,React.createElement("label",{style:fl},"Área / Ramo do direito"),React.createElement("input",{style:sinp,value:area,onChange:e=>setArea(e.target.value),placeholder:"Ex: Direito Civil, Processual..."})),
+            React.createElement("div",null,React.createElement("label",{style:fl},"Subtema / Problema central"),React.createElement("input",{style:sinp,value:subtema,onChange:e=>setSubtema(e.target.value),placeholder:"Ex: Dano moral coletivo pós-2020"}))
+          ),
+          React.createElement("div",null,
+            React.createElement("label",{style:fl},"Descrição completa do conteúdo *"),
+            React.createElement("textarea",{style:{...sinp,minHeight:100,resize:"vertical"},value:descricao,onChange:e=>setDescricao(e.target.value),placeholder:"Descreva tópicos, doutrina, jurisprudência (STF, STJ), metodologia, objetivos, legislação..."})
+          )
+        ),
+
+        React.createElement("div",{style:card},
+          React.createElement(SumLabel,null,"Configurações de estrutura"),
+          React.createElement("div",{style:g3},
+            React.createElement("div",null,React.createElement("label",{style:fl},"Nº de capítulos"),React.createElement("input",{style:sinp,type:"number",min:"1",max:"30",value:capitulos,onChange:e=>setCapitulos(e.target.value),placeholder:"Automático"})),
+            React.createElement("div",null,React.createElement("label",{style:fl},"Páginas estimadas"),React.createElement("input",{style:sinp,type:"number",min:"1",value:paginas,onChange:e=>setPaginas(e.target.value),placeholder:"Ex: 200"})),
+            React.createElement("div",null,React.createElement("label",{style:fl},"Ano de referência"),React.createElement("input",{style:sinp,type:"number",min:"2020",max:"2026",value:ano,onChange:e=>setAno(e.target.value),placeholder:"2025"}))
+          ),
+          React.createElement("div",{style:g2},
+            React.createElement("div",null,
+              React.createElement("label",{style:fl},"Sistema de numeração"),
+              React.createElement("select",{style:sinp,value:formato,onChange:e=>setFormato(e.target.value)},
+                React.createElement("option",{value:"ABNT 1/1.1/1.1.1"},"ABNT — 1 / 1.1 / 1.1.1"),
+                React.createElement("option",{value:"Romano I/I.I"},"Romano — I / I.I"),
+                React.createElement("option",{value:"Letras A/A.1"},"Letras — A / A.1"),
+                React.createElement("option",{value:"Capitulo por extenso"},"Capítulo por extenso"),
+                React.createElement("option",{value:"Sem numeracao"},"Sem numeração"),
+              )
+            ),
+            React.createElement("div",null,
+              React.createElement("label",{style:fl},"Profundidade"),
+              React.createElement("select",{style:sinp,value:nivel,onChange:e=>setNivel(e.target.value)},
+                React.createElement("option",{value:"3 niveis: capitulo/secao/subsecao"},"3 níveis: capítulo / seção / subseção"),
+                React.createElement("option",{value:"2 niveis: capitulo/secao"},"2 níveis: capítulo / seção"),
+                React.createElement("option",{value:"4 niveis: muito detalhado"},"4 níveis: muito detalhado"),
+              )
+            )
+          ),
+          React.createElement("div",null,
+            React.createElement("label",{style:fl},"Seções fixas (clique para ativar)"),
+            React.createElement("div",{style:{display:"flex",flexWrap:"wrap",gap:6,marginTop:4}},
+              tags.map((t,i)=>React.createElement(SumTag,{key:t.val,label:t.label,on:t.on,onClick:()=>toggleTag(i)}))
+            )
+          )
+        ),
+
+        React.createElement("div",{style:card},
+          React.createElement(SumLabel,null,"Qualidade e estilo"),
+          React.createElement("div",{style:g2},
+            React.createElement("div",null,
+              React.createElement("label",{style:fl},"Estilo de escrita"),
+              React.createElement("select",{style:sinp,value:estilo,onChange:e=>setEstilo(e.target.value)},
+                React.createElement("option",{value:"academico formal ABNT"},"Acadêmico formal (ABNT)"),
+                React.createElement("option",{value:"juridico tecnico"},"Jurídico técnico"),
+                React.createElement("option",{value:"didatico acessivel"},"Didático acessível"),
+                React.createElement("option",{value:"editorial narrativo"},"Editorial narrativo"),
+              )
+            ),
+            React.createElement("div",null,
+              React.createElement("label",{style:fl},"Doutrina e jurisprudência"),
+              React.createElement("select",{style:sinp,value:doutrina,onChange:e=>setDoutrina(e.target.value)},
+                React.createElement("option",{value:"2020-2025 atualizada"},"2020-2025 (mais recente)"),
+                React.createElement("option",{value:"2015-2025"},"2015-2025 (5 anos)"),
+                React.createElement("option",{value:"classica e contemporanea"},"Clássica + contemporânea"),
+                React.createElement("option",{value:"nao aplicavel"},"Não aplicável"),
+              )
+            )
+          ),
+          React.createElement("div",null,
+            React.createElement("label",{style:fl},"Instruções específicas do autor (opcional)"),
+            React.createElement("textarea",{style:{...sinp,minHeight:72,resize:"vertical"},value:instrucao,onChange:e=>setInstrucao(e.target.value),placeholder:"Ex: Cap. 4 com jurisprudência STJ. Marco Civil da Internet. Notas de rodapé..."})
+          )
+        ),
+
+        erro&&React.createElement("div",{style:{color:"#c05a5a",fontSize:12,padding:"10px 14px",background:"rgba(192,90,90,.08)",border:"1px solid rgba(192,90,90,.25)",borderRadius:8,marginBottom:8}},
+          "⚠ ",erro
+        ),
+
+        React.createElement("button",{onClick:gerar,disabled:loading,style:{
+          width:"100%",padding:13,
+          background:loading?SC.s3:`linear-gradient(135deg,${SC.gold},#a8882e)`,
+          border:"none",borderRadius:9,
+          color:loading?SC.mt:"#08090c",
+          fontFamily:"inherit",fontSize:14,fontWeight:600,
+          cursor:loading?"not-allowed":"pointer",
+          boxShadow:"0 4px 24px rgba(200,169,110,.18)",
+          opacity:loading?0.6:1,
+        }},loading?"Gerando sumário completo...":"Gerar Sumário Completo"),
+
+        loading&&!output&&React.createElement("div",{style:{textAlign:"center",color:SC.mt,fontSize:13,padding:20}},
+          "Gerando sumário profissional, aguarde..."
+        ),
+
+        output&&React.createElement("div",{ref:outputRef,style:{marginTop:20}},
+          React.createElement("div",{style:{display:"flex",gap:8,flexWrap:"wrap",marginBottom:10}},
+            React.createElement(SumBtn,{color:copied?"#5aad7a":null,onClick:copiar},copied?"✓ Copiado!":"Copiar sumário"),
+            React.createElement(SumBtn,{color:"#5a8fc0",onClick:()=>baixar("txt")},"Baixar .txt"),
+            React.createElement(SumBtn,{color:"#9b7fd5",onClick:()=>baixar("html")},"Baixar .html"),
+            React.createElement(SumBtn,{onClick:()=>{setOutput("");setErro("");setBarraFixa(false);setProgresso(0);}},"Novo"),
+          ),
+          React.createElement("div",{style:{
+            background:SC.s2,border:`1px solid ${SC.bd}`,borderRadius:9,
+            padding:"18px 20px",fontFamily:"monospace",fontSize:12,
+            lineHeight:1.9,whiteSpace:"pre-wrap",maxHeight:"65vh",
+            overflowY:"auto",color:"#c8ccd8",
+          }},output)
+        )
+      ),
+
+      /* ── MODELOS ── */
+      subTab==="modelos"&&React.createElement("div",{style:card},
+        React.createElement(SumLabel,null,"Modelos prontos — clique para carregar"),
+        [
+          ["tese","ACADÊMICO","Tese de Doutorado em Direito","8 capítulos — Responsabilidade Civil do Estado, jurisprudência STF/STJ 2020-2025."],
+          ["monografia","ACADÊMICO","Monografia / TCC Jurídico","5 capítulos — LGPD e relações de emprego, estrutura ABNT completa."],
+          ["livro","EDITORIAL","Livro / Tratado Jurídico","12 capítulos — Tratado de obrigações e contratos, doutrina clássica e contemporânea."],
+          ["parecer","JURÍDICO","Parecer Jurídico","6 tópicos — Constitucionalidade da tributação de criptoativos no Brasil."],
+          ["artigo","CIENTÍFICO","Artigo Científico","5 seções — Dano existencial no direito do trabalho, jurisprudência 2020-2025."],
+          ["ebook","EDITORIAL","E-book Jurídico Prático","8 capítulos — Direitos do consumidor no e-commerce, linguagem acessível."],
+        ].map(([key,badge,title,desc])=>React.createElement("div",{key,onClick:()=>carregar(key),style:{
+          background:SC.s2,border:`1px solid ${SC.bd}`,borderRadius:9,
+          padding:16,cursor:"pointer",marginBottom:10,
+        }},
+          React.createElement("div",{style:{fontSize:9,padding:"2px 8px",borderRadius:10,background:SC.gold3,color:SC.gold,display:"inline-block",fontFamily:"monospace",letterSpacing:"0.1em",marginBottom:7}},badge),
+          React.createElement("div",{style:{fontSize:13,fontWeight:500,color:SC.tx,marginBottom:4}},title),
+          React.createElement("div",{style:{fontSize:11.5,color:SC.mt,lineHeight:1.5}},desc)
+        ))
+      ),
+
+      /* ── COMO USAR ── */
+      subTab==="como"&&React.createElement("div",{style:card},
+        React.createElement(SumLabel,null,"Como usar o JurSumário"),
+        [
+          ["1","Preencha o Editor ou use um Modelo","Informe título, tipo, área e descrição detalhada. Os modelos pré-preenchem tudo automaticamente."],
+          ["2","Clique em Gerar Sumário Completo","O sumário é gerado diretamente aqui, com barra de progresso em tempo real."],
+          ["3","Acompanhe pela barra de progresso","A barra fixa no topo mostra cada etapa da geração e permanece visível pós-conclusão."],
+          ["4","Copie ou baixe o arquivo pronto","Use Copiar sumário para colar em qualquer editor, ou baixe em .txt ou .html formatado."],
+          ["5","Saída sempre limpa","O sumário sai sem caracteres especiais, markdown, emojis ou símbolos decorativos."],
+        ].map(([n,h,p2])=>React.createElement("div",{key:n,style:{display:"flex",gap:14,padding:"13px 0",borderBottom:`1px solid ${SC.bd}`}},
+          React.createElement("div",{style:{fontFamily:"Georgia,serif",fontSize:"1.7rem",color:SC.gold,opacity:0.5,minWidth:28,lineHeight:1}},n),
+          React.createElement("div",null,
+            React.createElement("div",{style:{fontSize:13,fontWeight:500,color:SC.tx,marginBottom:3}},h),
+            React.createElement("div",{style:{fontSize:12,color:SC.mt,lineHeight:1.6}},p2)
+          )
+        ))
+      )
+    )
+  );
+}
+
+// ══════════════════════════════════════════════
 // CONFIGURAÇÃO BASE
 // ══════════════════════════════════════════════
 const TIPOS_DOC = [
   { ic:"📚", id:"livro",    l:"Livro / Tratado",   desc:"Capítulo acadêmico · ABNT · notas rodapé",  cor:"#7c3aed" },
-  { ic:"📋", id:"sumario",  l:"Sumário",           desc:"Estrutura numerada completa do tratado",    cor:"#0369a1" },
   { ic:"⚖️", id:"parecer",  l:"Parecer Jurídico",  desc:"Ementa · relatório · fundamentação",        cor:"#b45309" },
   { ic:"📄", id:"peticao",  l:"Petição",           desc:"Fatos · direito · pedidos · judicial",       cor:"#0f766e" },
   { ic:"🎓", id:"artigo",   l:"Artigo Científico", desc:"Qualis A2 · resumo · referências ABNT",    cor:"#be185d" },
@@ -2770,13 +3318,14 @@ function App() {
 
       {/* ══ NAV ══ */}
       <div style={{background:CARD,borderBottom:`2px solid ${BORDER}`,display:"flex",alignItems:"stretch",flexShrink:0,overflowX:"auto"}}>
-        {[{id:"inicio",ic:"🏠",l:"Início"},{id:"editor",ic:"✍️",l:"Editor"},{id:"capitulos",ic:"📖",l:"Capítulos"},{id:"validar",ic:"✓",l:"Validar"},{id:"templates",ic:"📌",l:"Templates"},{id:"biblio",ic:"📚",l:"Bibliotecas"},{id:"busca",ic:"🔎",l:"Busca Jur."},{id:"projeto",ic:"🗂",l:"Projeto"}].map(t=>(
+        {[{id:"inicio",ic:"🏠",l:"Início"},{id:"editor",ic:"✍️",l:"Editor"},{id:"capitulos",ic:"📖",l:"Capítulos"},{id:"sumario",ic:"📋",l:"Sumário"},{id:"validar",ic:"✓",l:"Validar"},{id:"templates",ic:"📌",l:"Templates"},{id:"biblio",ic:"📚",l:"Bibliotecas"},{id:"busca",ic:"🔎",l:"Busca Jur."},{id:"projeto",ic:"🗂",l:"Projeto"}].map(t=>(
           <button key={t.id} className="nav-tab" onClick={()=>setTab(t.id)}
             style={{padding:"8px 14px",border:"none",borderBottom:`3px solid ${tab===t.id?G:"transparent"}`,background:tab===t.id?(darkMode?"rgba(201,168,76,.08)":"#fdfaf4"):CARD,cursor:"pointer",fontSize:11,color:tab===t.id?(darkMode?G:N):TEXT2,fontFamily:"Georgia,serif",fontWeight:tab===t.id?700:400,display:"flex",alignItems:"center",gap:4,transition:"all .12s",marginBottom:-2,whiteSpace:"nowrap",flexShrink:0}}>
             <span>{t.ic}</span>{t.l}
             {t.id==="capitulos"&&<span style={{fontSize:7,padding:"1px 4px",background:"rgba(124,58,237,.2)",border:"1px solid #7c3aed40",color:"#7c3aed",borderRadius:3,fontFamily:"monospace",marginLeft:2}}>FASE 4</span>}
             {t.id==="validar"&&<span style={{fontSize:7,padding:"1px 4px",background:"rgba(22,163,74,.2)",border:"1px solid rgba(22,163,74,.4)",color:"#16a34a",borderRadius:3,fontFamily:"monospace",marginLeft:2}}>FASE 5</span>}
             {t.id==="biblio"&&<span style={{fontSize:7,padding:"1px 4px",background:"rgba(201,168,76,.2)",border:`1px solid ${G}40`,color:G,borderRadius:3,fontFamily:"monospace",marginLeft:2}}>FASE 3</span>}
+            {t.id==="sumario"&&<span style={{fontSize:7,padding:"1px 4px",background:"rgba(3,105,161,.2)",border:"1px solid rgba(3,105,161,.4)",color:"#38bdf8",borderRadius:3,fontFamily:"monospace",marginLeft:2}}>v5</span>}
           </button>
         ))}
         <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8,padding:"0 14px",flexShrink:0}}>
@@ -3251,6 +3800,13 @@ function App() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ══════════ SUMÁRIO — JurSumario v5 ══════════ */}
+      {tab==="sumario"&&(
+        <div style={{flex:1,overflowY:"auto",padding:"10px 22px"}}>
+          <JurSumario/>
         </div>
       )}
 
@@ -3763,7 +4319,7 @@ function App() {
             </div>
           )}
           <div style={{display:"flex",gap:7,marginTop:16}}>
-            <button onClick={()=>{setTipo("sumario");setTema(p.nome||"Tratado Jurídico");setTab("editor");}}
+            <button onClick={()=>{setTab("sumario");}}
               style={{padding:"7px 16px",background:darkMode?"#1a2744":"#0f1a33",color:G,border:`1px solid ${G}`,borderRadius:4,cursor:"pointer",fontSize:12,fontFamily:"monospace",fontWeight:700}}>📋 Gerar Sumário</button>
             <button onClick={()=>{if(window.confirm("Limpar todo o projeto?"))setProj({});}}
               style={{padding:"7px 14px",background:CARD,color:"#b91c1c",border:"1px solid #fca5a5",borderRadius:4,cursor:"pointer",fontSize:12,fontFamily:"monospace"}}>🗑 Limpar</button>
