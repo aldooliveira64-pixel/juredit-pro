@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>JurEditPro Excellence v4 — Redação Jurídica com IA</title>
+  <title>JurEditPro Excellence v5 — Redação Jurídica com IA</title>
   <meta name="description" content="Redação jurídica acadêmica · ABNT · OAI-PMH · LexML · notas de rodapé · exportação .docx"/>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27><text y=%27.9em%27 font-size=%2790%27>⚖️</text></svg>"/>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -301,6 +301,11 @@ const CORS_PROXIES = [
   {
     id: "corsproxy",
     wrap: url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+    parse: async res => res.text(),
+  },
+  {
+    id: "thingproxy",
+    wrap: url => `https://thingproxy.freeboard.io/fetch/${url}`,
     parse: async res => res.text(),
   },
 ];
@@ -1186,7 +1191,7 @@ function JurSumario(){
     try{
       const res=await fetch("https://api.anthropic.com/v1/messages",{
         method:"POST",
-        headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true"},
+        headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
         body:JSON.stringify({
           model:"claude-sonnet-4-20250514",
           max_tokens:8000,
@@ -3254,7 +3259,7 @@ function App() {
       <div style={{background:"linear-gradient(90deg,#08122a,#0f1a33,#1a2744)",padding:"9px 16px",display:"flex",alignItems:"center",gap:10,borderBottom:`2px solid ${G}`,flexShrink:0}}>
         <div style={{width:36,height:36,borderRadius:"50%",border:`2px solid ${G}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,background:"rgba(201,168,76,.1)",flexShrink:0}}>⚖️</div>
         <div style={{flex:1,minWidth:0}}>
-          <div style={{fontWeight:700,fontSize:15,color:"white",lineHeight:1.2}}>Jur<span style={{color:G}}>Edit</span>Pro <span style={{fontSize:8,fontFamily:"monospace",color:"rgba(201,168,76,.7)",marginLeft:5,letterSpacing:".1em",fontWeight:400}}>EXCELLENCE v4 · FASE 3 COMPLETA</span></div>
+          <div style={{fontWeight:700,fontSize:15,color:"white",lineHeight:1.2}}>Jur<span style={{color:G}}>Edit</span>Pro <span style={{fontSize:8,fontFamily:"monospace",color:"rgba(201,168,76,.7)",marginLeft:5,letterSpacing:".1em",fontWeight:400}}>EXCELLENCE v5 · FASE 5 COMPLETA</span></div>
           <div style={{fontSize:8,color:"rgba(255,255,255,.3)",letterSpacing:".07em",textTransform:"uppercase",fontFamily:"monospace",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.nome||"Redação jurídica · streaming · OAI-PMH · LexML · ABNT · bibliotecas · sessões"}</div>
         </div>
         <div style={{display:"flex",background:"rgba(255,255,255,.07)",border:"1px solid rgba(255,255,255,.12)",borderRadius:6,overflow:"hidden",flexShrink:0}}>
@@ -4104,7 +4109,7 @@ function App() {
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
               <button onClick={pesquisarBiblio}
                 disabled={biblioLoading||(biblioModo==="abnt"?!biblioAbntInput.trim():!biblioTermo.trim())}
-                style={{padding:"9px 20px",background:(biblioLoading||(biblioModo==="abnt"?!biblioAbntInput:!biblioTermo).trim===undefined)?(darkMode?"#1e2d45":"#d4cfc6"):(darkMode?"#1a2744":"#0f1a33"),color:G,border:`1px solid ${G}`,borderRadius:5,cursor:"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700,transition:"all .2s"}}>
+                style={{padding:"9px 20px",background:(biblioLoading||(biblioModo==="abnt"?!biblioAbntInput.trim():!biblioTermo.trim()))?(darkMode?"#1e2d45":"#d4cfc6"):(darkMode?"#1a2744":"#0f1a33"),color:G,border:`1px solid ${G}`,borderRadius:5,cursor:(biblioLoading||(biblioModo==="abnt"?!biblioAbntInput.trim():!biblioTermo.trim()))?"not-allowed":"pointer",fontSize:11,fontFamily:"monospace",fontWeight:700,transition:"all .2s"}}>
                 {biblioLoading?"⏳ Gerando...":`⚖️ ${modosBiblio.find(m=>m.id===biblioModo)?.l}`}
               </button>
               {(biblioResult||biblioStream)&&(
