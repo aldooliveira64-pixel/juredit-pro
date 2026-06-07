@@ -1186,22 +1186,31 @@ function JurSumario(){
 
   const gerar=uC(async()=>{
     if(!titulo&&!descricao){setErro("Preencha ao menos o Título ou a Descrição.");return;}
+    // Lê motor e chave do localStorage (sincronizado com o Config da app)
+    const motorAtivo=(()=>{try{return localStorage.getItem("jep:motor")||"claude";}catch{return"claude";}})();
+    const gKey=(()=>{try{return localStorage.getItem("jep:gkey")||"";}catch{return"";}})();
+    if(motorAtivo==="gemini"&&!gKey.trim()){
+      setErro("⚠ Gemini selecionado mas sem chave. Abra Config e cole a chave Google AI Studio.");
+      return;
+    }
     setErro("");setLoading(true);setOutput("");setBarraFixa(false);setProgresso(0);setEtapa("");
     simularProgresso();
     try{
-      const res=await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST",
-        headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-        body:JSON.stringify({
-          model:"claude-sonnet-4-20250514",
-          max_tokens:8000,
-          messages:[{role:"user",content:buildPrompt()}],
-        }),
-      });
-      const data=await res.json();
-      if(!res.ok)throw new Error(data?.error?.message||`Erro ${res.status}`);
-      const text=data?.content?.[0]?.text||"";
-      if(!text)throw new Error("Resposta vazia.");
+      const msgs=[{role:"user",content:buildPrompt()}];
+      const sys="Você é especialista em documentos acadêmicos e jurídicos brasileiros de alto nível.";
+      let text="";
+      if(motorAtivo==="gemini"){
+        text=await chamarGemini(msgs,sys,gKey,
+          s=>setEtapa(s),
+          chunk=>{text=chunk;setProgresso(p=>Math.min(97,p+2));}
+        );
+      }else{
+        text=await chamarClaudeStream(msgs,sys,
+          chunk=>{text=chunk;setProgresso(p=>Math.min(97,p+2));},
+          s=>setEtapa(s)
+        );
+      }
+      if(!text)throw new Error("Resposta vazia do motor de IA.");
       const limpo=sumLimpar(text);
       setOutput(limpo);
       setProgresso(100);
@@ -1209,7 +1218,7 @@ function JurSumario(){
       setBarraFixa(true);
       setTimeout(()=>outputRef.current?.scrollIntoView({behavior:"smooth",block:"start"}),100);
     }catch(e){
-      setErro("Erro: "+(e.message||"verifique a conexão."));
+      setErro("Erro: "+(e.message||"verifique a conexão e o motor ativo no Config."));
       setBarraFixa(false);
     }
     setLoading(false);
