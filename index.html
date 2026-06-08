@@ -866,13 +866,17 @@ function SidebarDoutrina({ capitulo, onImportar, onFechar, onUsar, darkMode, are
 // MOTORES DE IA
 // ══════════════════════════════════════════════
 async function chamarClaudeStream(messages, system, onChunk, onStatus) {
+  // Lê chave Claude do localStorage (BYOK para GitHub Pages)
+  const _ckey=(()=>{try{return localStorage.getItem("jep:ckey")||"";}catch{return"";}})();
+  const _hdrs={"Content-Type":"application/json","anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"};
+  if(_ckey.trim()) _hdrs["x-api-key"]=_ckey.trim();
   const WAITS = [15, 30, 60];
   for (let t = 0; t <= 3; t++) {
     if (t > 0) { for (let s = WAITS[t-1]; s > 0; s--) { onStatus?.(`Aguardando ${s}s (tentativa ${t+1}/4)...`); await new Promise(r => setTimeout(r, 1000)); } }
     onStatus?.(t === 0 ? "⚖️ Claude Sonnet 4 gerando..." : `🔄 Tentativa ${t+1}/4...`);
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST", headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+        method:"POST", headers:_hdrs,
         body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:16000, stream:true, system, messages }),
       });
       if (res.status===529||res.status===503) { if(t<3) continue; throw new Error("API sobrecarregada."); }
@@ -899,8 +903,11 @@ async function chamarClaudeStream(messages, system, onChunk, onStatus) {
 }
 
 async function chamarClaudeFallback(messages, system, onStatus) {
+  const _ckey=(()=>{try{return localStorage.getItem("jep:ckey")||"";}catch{return"";}})();
+  const _hdrs={"Content-Type":"application/json","anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"};
+  if(_ckey.trim()) _hdrs["x-api-key"]=_ckey.trim();
   onStatus?.("⚖️ Claude gerando (modo direto)...");
-  const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:16000,system,messages})});
+  const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:_hdrs,body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:16000,system,messages})});
   if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(`Erro ${res.status}: ${e?.error?.message||res.statusText}`);}
   const data=await res.json();
   const text=(data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("").trim();
@@ -2926,8 +2933,10 @@ function App() {
 
   const [motor,setMotor]=useState(()=>load("jep:motor","claude"));
   const [geminiKey,setGeminiKey]=useState(()=>{ try{return localStorage.getItem("jep:gkey")||"";}catch{return "";} });
+  const [claudeKey,setClaudeKey]=useState(()=>{ try{return localStorage.getItem("jep:ckey")||"";}catch{return "";} });
   const [showCfg,setShowCfg]=useState(false);
   const [showKey,setShowKey]=useState(false);
+  const [showCKey,setShowCKey]=useState(false);
   const [darkMode,setDarkMode]=useState(()=>load("jep:dark",false));
   const [tab,setTab]=useState("inicio");
   const [tipo,setTipo]=useState("livro");
@@ -2990,6 +2999,7 @@ function App() {
 
   useEffect(()=>{document.body.className=darkMode?"dark":"";save("jep:dark",darkMode);},[darkMode]);
   useEffect(()=>{ try{localStorage.setItem("jep:gkey",geminiKey);}catch{} },[geminiKey]);
+  useEffect(()=>{ try{localStorage.setItem("jep:ckey",claudeKey);}catch{} },[claudeKey]);
   useEffect(()=>save("jep:motor",motor),[motor]);
   useEffect(()=>save("jep:proj",proj),[proj]);
   useEffect(()=>save("jep:area",area),[area]);
@@ -3315,14 +3325,21 @@ function App() {
         <div style={{background:darkMode?"#070f1c":"#07101e",borderBottom:"1px solid rgba(201,168,76,.2)",padding:"10px 18px",display:"flex",gap:12,alignItems:"flex-start",flexWrap:"wrap",flexShrink:0}}>
           <div style={{background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",borderRadius:6,padding:"8px 12px",minWidth:180}}>
             <div style={{fontSize:9,color:G,fontFamily:"monospace",marginBottom:5,textTransform:"uppercase",letterSpacing:".08em"}}>Motor ativo</div>
-            {motor==="claude"?(<div><div style={{fontSize:12,color:"#4ade80",fontWeight:700}}>✓ Claude Sonnet 4 · streaming</div><div style={{fontSize:9,color:"rgba(255,255,255,.4)",fontFamily:"monospace",marginTop:2}}>Texto em tempo real. Sem chave.</div></div>):(
+            {motor==="claude"?(<div><div style={{fontSize:12,color:claudeKey?"#4ade80":"#facc15",fontWeight:700}}>{claudeKey?"✓ Claude Sonnet 4 · BYOK":"⚡ Claude Sonnet 4 · streaming"}</div><div style={{fontSize:9,color:"rgba(255,255,255,.4)",fontFamily:"monospace",marginTop:2}}>{claudeKey?"Chave própria ativa.":"Sem chave — funciona no claude.ai."}</div></div>):(
               <div><div style={{fontSize:12,color:geminiKey?"#4ade80":"#fca5a5",fontWeight:700}}>{geminiKey?"✓ Gemini 2.5 Flash":"⚠ Sem chave"}</div><div style={{fontSize:9,color:"rgba(255,255,255,.4)",fontFamily:"monospace",marginTop:2}}>Requer chave Google AI Studio.</div></div>
             )}
           </div>
-          <div style={{flex:1,minWidth:220}}>
+          <div style={{minWidth:220}}>
+            <div style={{fontSize:9,color:"#818cf8",fontFamily:"monospace",marginBottom:5,textTransform:"uppercase",letterSpacing:".08em"}}>🔑 Chave Anthropic (Claude — GitHub Pages)</div>
+            <div style={{display:"flex",gap:5}}>
+              <input type={showCKey?"text":"password"} value={claudeKey} onChange={e=>setClaudeKey(e.target.value)} placeholder="sk-ant-... (obrigatório fora do claude.ai)" style={{flex:1,padding:"6px 9px",border:`1px solid ${claudeKey?"rgba(129,140,248,.5)":"rgba(129,140,248,.2)"}`,borderRadius:4,background:"rgba(255,255,255,.07)",color:"white",fontFamily:"monospace",fontSize:11,outline:"none"}}/>
+              <button onClick={()=>setShowCKey(!showCKey)} style={{padding:"6px 8px",background:"rgba(255,255,255,.07)",border:"1px solid rgba(255,255,255,.12)",color:"#ccc",borderRadius:4,cursor:"pointer",fontSize:12}}>{showCKey?"🙈":"👁"}</button>
+            </div>
+          </div>
+          <div style={{minWidth:220}}>
             <div style={{fontSize:9,color:G,fontFamily:"monospace",marginBottom:5,textTransform:"uppercase",letterSpacing:".08em"}}>🔑 Chave Google AI Studio (Gemini — opcional)</div>
             <div style={{display:"flex",gap:5}}>
-              <input type={showKey?"text":"password"} value={geminiKey} onChange={e=>setGeminiKey(e.target.value)} placeholder="AIzaSy... (opcional — Claude funciona sem chave)" style={{flex:1,padding:"6px 9px",border:"1px solid rgba(201,168,76,.3)",borderRadius:4,background:"rgba(255,255,255,.07)",color:"white",fontFamily:"monospace",fontSize:11,outline:"none"}}/>
+              <input type={showKey?"text":"password"} value={geminiKey} onChange={e=>setGeminiKey(e.target.value)} placeholder="AIzaSy... (opcional)" style={{flex:1,padding:"6px 9px",border:"1px solid rgba(201,168,76,.3)",borderRadius:4,background:"rgba(255,255,255,.07)",color:"white",fontFamily:"monospace",fontSize:11,outline:"none"}}/>
               <button onClick={()=>setShowKey(!showKey)} style={{padding:"6px 8px",background:"rgba(255,255,255,.07)",border:"1px solid rgba(255,255,255,.12)",color:"#ccc",borderRadius:4,cursor:"pointer",fontSize:12}}>{showKey?"🙈":"👁"}</button>
             </div>
           </div>
