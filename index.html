@@ -1193,20 +1193,27 @@ function JurSumario(){
 
   const gerar=uC(async()=>{
     if(!titulo&&!descricao){setErro("Preencha ao menos o Título ou a Descrição.");return;}
-    // Lê motor e chave do localStorage (sincronizado com o Config da app)
+    // Lê chaves e motor do localStorage
     const motorAtivo=(()=>{try{return localStorage.getItem("jep:motor")||"claude";}catch{return"claude";}})();
     const gKey=(()=>{try{return localStorage.getItem("jep:gkey")||"";}catch{return"";}})();
-    if(motorAtivo==="gemini"&&!gKey.trim()){
-      setErro("⚠ Gemini selecionado mas sem chave. Abra Config e cole a chave Google AI Studio.");
+    const cKey=(()=>{try{return localStorage.getItem("jep:ckey")||"";}catch{return"";}})();
+    // Resolve motor efetivo: se Claude sem chave E Gemini tem chave → usa Gemini automaticamente
+    let motorEfetivo=motorAtivo;
+    if(motorAtivo==="claude"&&!cKey.trim()&&gKey.trim()){
+      motorEfetivo="gemini";
+      setEtapa("⚡ Claude sem chave — usando Gemini automaticamente...");
+    }
+    if(motorEfetivo==="gemini"&&!gKey.trim()){
+      setErro("⚠ Nenhuma chave disponível. Abra Config e cole a chave Gemini (gratuita) ou Anthropic.");
       return;
     }
-    setErro("");setLoading(true);setOutput("");setBarraFixa(false);setProgresso(0);setEtapa("");
+    setErro("");setLoading(true);setOutput("");setBarraFixa(false);setProgresso(0);
     simularProgresso();
     try{
       const msgs=[{role:"user",content:buildPrompt()}];
       const sys="Você é especialista em documentos acadêmicos e jurídicos brasileiros de alto nível.";
       let text="";
-      if(motorAtivo==="gemini"){
+      if(motorEfetivo==="gemini"){
         text=await chamarGemini(msgs,sys,gKey,
           s=>setEtapa(s),
           chunk=>{text=chunk;setProgresso(p=>Math.min(97,p+2));}
