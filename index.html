@@ -993,6 +993,37 @@ async function chamarGemini(messages, system, apiKey, onStatus, onChunk) {
 }
 
 // ══════════════════════════════════════════════
+// chamarIA — dispatcher inteligente FREE-FIRST
+// Tenta: Gemini (se chave disponível) → Claude stream (proxy claude.ai) → erro
+// Use este helper em todos os módulos para garantir operação FREE
+// ══════════════════════════════════════════════
+async function chamarIA(messages, system, onChunk, onStatus, opts={}) {
+  const { geminiKey="", claudeKey="", motor="claude" } = opts;
+  // Lê do localStorage se não passado explicitamente
+  const gKey = geminiKey || (()=>{ try{return localStorage.getItem("jep:gkey")||"";}catch{return "";} })();
+  const cKey = claudeKey || (()=>{ try{return localStorage.getItem("jep:ckey")||"";}catch{return "";} })();
+  const m    = motor    || (()=>{ try{return localStorage.getItem("jep:motor")||"claude";}catch{return "claude";} })();
+
+  // Se motor Gemini E tem chave → Gemini primeiro
+  if (m === "gemini" && gKey.trim()) {
+    try { return await chamarGemini(messages, system, gKey, onStatus, onChunk); } catch(e) {
+      if (e.message.includes("bloqueado") || e.message.includes("Failed to fetch")) throw e;
+      // outros erros → tenta Claude
+    }
+  }
+
+  // Claude (sem chave = proxy claude.ai; com chave = BYOK direto)
+  try { return await chamarClaudeStream(messages, system, onChunk, onStatus); } catch(e) {
+    // Se Claude falhou e Gemini tem chave → tenta Gemini como fallback
+    if (gKey.trim() && m !== "gemini") {
+      onStatus?.("⚡ Fallback para Gemini...");
+      return await chamarGemini(messages, system, gKey, onStatus, onChunk);
+    }
+    throw e;
+  }
+}
+
+// ══════════════════════════════════════════════
 // JURSUMARIO — componente dedicado (v5 JSX → HTML)
 // ══════════════════════════════════════════════
 
@@ -1213,17 +1244,12 @@ function JurSumario(){
       const msgs=[{role:"user",content:buildPrompt()}];
       const sys="Você é especialista em documentos acadêmicos e jurídicos brasileiros de alto nível.";
       let text="";
-      if(motorEfetivo==="gemini"){
-        text=await chamarGemini(msgs,sys,gKey,
-          s=>setEtapa(s),
-          chunk=>{text=chunk;setProgresso(p=>Math.min(97,p+2));}
-        );
-      }else{
-        text=await chamarClaudeStream(msgs,sys,
-          chunk=>{text=chunk;setProgresso(p=>Math.min(97,p+2));},
-          s=>setEtapa(s)
-        );
-      }
+      // Usa chamarIA — dispatcher FREE-FIRST (Gemini se chave disponível, Claude como fallback)
+      text=await chamarIA(msgs,sys,
+        chunk=>{text=chunk;setProgresso(p=>Math.min(97,p+2));},
+        s=>setEtapa(s),
+        {geminiKey:gKey,claudeKey:cKey,motor:motorEfetivo}
+      );
       if(!text)throw new Error("Resposta vazia do motor de IA.");
       const limpo=sumLimpar(text);
       setOutput(limpo);
@@ -1232,7 +1258,7 @@ function JurSumario(){
       setBarraFixa(true);
       setTimeout(()=>outputRef.current?.scrollIntoView({behavior:"smooth",block:"start"}),100);
     }catch(e){
-      setErro("Erro: "+(e.message||"verifique a conexão e o motor ativo no Config."));
+      setErro("Erro: "+(e.message||"verifique a conexão, o motor e a chave nas Config."));
       setBarraFixa(false);
     }
     setLoading(false);
@@ -1482,7 +1508,10 @@ pre{white-space:pre-wrap;font-family:"Times New Roman",serif;font-size:1rem;line
         ),
 
         erro&&React.createElement("div",{style:{color:"#c05a5a",fontSize:12,padding:"10px 14px",background:"rgba(192,90,90,.08)",border:"1px solid rgba(192,90,90,.25)",borderRadius:8,marginBottom:8}},
-          "⚠ ",erro
+          "⚠ ",erro,
+          (erro.includes("chave")||erro.includes("Nenhuma"))&&React.createElement("div",{style:{marginTop:6,fontSize:10,color:"#e8a800"}},
+            "📌 Para rodar FREE no GitHub Pages: Abra ⚙ Config → cole sua chave Google AI Studio (gratuita em aistudio.google.com) → clique Gemini no seletor de motor."
+          )
         ),
 
         React.createElement("button",{onClick:gerar,disabled:loading,style:{
@@ -1993,13 +2022,13 @@ REGRAS ABSOLUTAS:
 }
 
 // 4.3 — Gera resumo automático de 150 palavras do capítulo anterior
-async function gerarResumoCapitulo(texto, onChunk, onStatus) {
+async function gerarResumoCapitulo(texto, onChunk, onStatus, opts={}) {
   onStatus?.("📝 Resumindo capítulo anterior...");
   const prompt = `Você é um assistente jurídico especializado em sínteses acadêmicas. Leia o capítulo abaixo e produza um RESUMO EXECUTIVO em exatamente 150 palavras, preservando: (1) as teses centrais, (2) a legislação mencionada, (3) os precedentes judiciais mais relevantes, (4) as controvérsias doutrinárias identificadas. O resumo será usado como contexto para o próximo capítulo.\n\nCAPÍTULO:\n${texto.slice(0,10000)}`;
-  return await chamarClaudeStream(
+  return await chamarIA(
     [{role:"user",content:prompt}],
     "Você é especialista em sínteses jurídicas acadêmicas. Seja preciso, técnico e objetivo.",
-    onChunk, onStatus
+    onChunk, onStatus, opts
   );
 }
 
@@ -2110,7 +2139,7 @@ Critérios: formato correto para o tipo de ação, tribunal compatível com o ti
 Responda APENAS com o JSON array, sem texto adicional.`;
 
   try {
-    const raw = await chamarClaudeStream(
+    const raw = await chamarIA(
       [{role:"user",content:prompt}],
       "Você é especialista em jurisprudência brasileira. Responda apenas com JSON válido.",
       null, onStatus
@@ -2279,10 +2308,12 @@ const PETICAO_CAMPOS = [
   { id:"pedidos",       label:"Pedidos",        ic:"✅", ph:"Especifique os pedidos formulados ao final da petição...",                                             max:2000, rows:4 },
 ];
 
-function PeticaoWizard({ onFechar, onGerar, darkMode, area, proj }) {
+function PeticaoWizard({ onFechar, onGerar, darkMode, area, proj, geminiKey="", claudeKey="", motor="claude" }) {
   const G="#c9a84c", N=darkMode?"#e8dcc8":"#0f1a33", CARD=darkMode?"#111827":"#fff";
   const CR=darkMode?"#0c1220":"#f5f1ea", BD=darkMode?"#1e2d45":"#e0dbd4", T2=darkMode?"#9ca3af":"#6b7280";
   const AZUL="#1a3a6b", AZUL_LIGHT=darkMode?"#1e3a7a":"#e8edf5";
+  // Helper IA inteligente: usa Gemini se disponível, Claude como fallback
+  const iaOpts = { geminiKey, claudeKey, motor };
 
   const [campos, setCampos] = useState({ enderecamento:"", autor:"", reu:"", fatos:"", direito:"", pedidos:"" });
   const [analise, setAnalise] = useState(null);
@@ -2426,10 +2457,10 @@ Responda com este JSON exato:
 }`;
     try {
       const content = montarMensagemComAnexos(prompt);
-      const raw = await chamarClaudeStream(
+      const raw = await chamarIA(
         [{role:"user", content}],
         "Especialista em jurisprudência brasileira. Responda apenas com JSON válido, sem markdown.",
-        null, ()=>{}
+        null, ()=>{}, iaOpts
       );
       const clean = raw.replace(/```json?|```/gi,"").trim();
       setAnalise(JSON.parse(clean));
@@ -2500,10 +2531,10 @@ REGRAS: jurisprudência integrada no texto, seções em *itálico numerado*, voz
 
     try {
       const content = montarMensagemComAnexos(prompt);
-      const reply = await chamarClaudeStream(
+      const reply = await chamarIA(
         [{role:"user", content}],
         `Você é redator jurídico forense especializado em ${area}. Voz formal e técnica. Jurisprudência integrada no texto — nunca em bloco separado.`,
-        partial => setStream(partial), ()=>{}
+        partial => setStream(partial), ()=>{}, iaOpts
       );
       setStream(""); setRascunho(reply); setGerando(false);
     } catch(e) { setStream(""); setGerando(false); }
@@ -3118,28 +3149,28 @@ function App() {
     const sys = buildSys(area, nivel, p);
     try {
       let reply = "";
-      await chamarClaudeStream([{role:"user",content:prompt}], sys,
+      await chamarIA([{role:"user",content:prompt}], sys,
         partial => { reply=partial; atualizarCap(cap.id,{texto:partial,progresso:calcularProgresso(partial)}); },
-        setStatus
+        setStatus, {motor,geminiKey,claudeKey}
       );
       atualizarCap(cap.id,{texto:reply,progresso:calcularProgresso(reply),gerando:false,ts:Date.now()});
       setHist(h=>[...h,{role:"user",content:prompt},{role:"assistant",content:reply}]);
-      setMsgs(m=>[...m,{role:"user",text:`[Cap. ${cap.numero}] ${cap.titulo}`},{role:"assistant",text:reply,motor:"claude",ts:Date.now()}]);
+      setMsgs(m=>[...m,{role:"user",text:`[Cap. ${cap.numero}] ${cap.titulo}`},{role:"assistant",text:reply,motor,ts:Date.now()}]);
       setStatus(""); setToast(`✅ Cap. ${cap.numero} gerado — ${calcularProgresso(reply)}% concluído`);
     } catch(e) { atualizarCap(cap.id,{gerando:false}); setToast("⚠️ "+e.message); }
     setGerandoCapId(null);
-  },[capitulos,capituloAtivo,area,nivel,p]);
+  },[capitulos,capituloAtivo,area,nivel,p,motor,geminiKey,claudeKey]);
 
   const resumirCapitulo = useCallback(async(cap) => {
     if(!cap.texto?.trim()){setToast("⚠️ Capítulo vazio — gere o texto primeiro");return;}
     setGerandoResId(cap.id);
     try {
-      const resumo = await gerarResumoCapitulo(cap.texto, null, setStatus);
+      const resumo = await gerarResumoCapitulo(cap.texto, null, setStatus, {motor,geminiKey,claudeKey});
       atualizarCap(cap.id,{resumo});
       setToast(`✅ Cap. ${cap.numero} resumido em 150 palavras`);
     } catch(e){setToast("⚠️ "+e.message);}
     setGerandoResId(null); setStatus("");
-  },[]);
+  },[motor,geminiKey,claudeKey]);
 
   // Stats Fase 4
   const totalPalavrasCaps = capitulos.reduce((s,c)=>s+contarPalavrasRaw(c.texto),0);
@@ -3172,7 +3203,7 @@ function App() {
   const send=useCallback(async(override)=>{
     const txt=override!==undefined?String(override).trim():tema.trim();
     if(!txt||loading) return;
-    if(motor==="gemini"&&!geminiKey?.trim()){setStatus("❌ Cole a chave Gemini nas configurações.");setTab("editor");return;}
+    if(motor==="gemini"&&!geminiKey?.trim()){setStatus("❌ Cole a chave Gemini nas configurações (Config → Chave Google AI Studio).");setTab("editor");return;}
     setTab("editor");
     const prompt=override!==undefined?txt:buildPrompt(tipo,problema,txt,area,nivel,p);
     const label=TIPOS_DOC.find(t=>t.id===tipo)?.l||"Texto";
@@ -3181,20 +3212,18 @@ function App() {
     setHist(nh);setMsgs(m=>[...m,{role:"user",text:display}]);
     setLoading(true);setStatus("");setStreamText("");
     try {
-      let reply;
-      if(motor==="gemini"){reply=await chamarGemini(nh,buildSys(area,nivel,p),geminiKey,setStatus,partial=>setStreamText(partial));}
-      else{reply=await chamarClaudeStream(nh,buildSys(area,nivel,p),partial=>setStreamText(partial),setStatus);}
+      const reply=await chamarIA(nh,buildSys(area,nivel,p),partial=>setStreamText(partial),setStatus,{motor,geminiKey,claudeKey});
       setStreamText("");
       setHist(h=>[...h,{role:"assistant",content:reply}]);
       setMsgs(m=>[...m,{role:"assistant",text:reply,motor,ts:Date.now()}]);
       setStatus("");
     } catch(e){
       let msg=e.message;
-      if(msg.includes("Failed to fetch")&&motor==="gemini") msg="Gemini bloqueado neste ambiente. Use Claude.";
+      if(msg.includes("Failed to fetch")) msg="IA bloqueada neste ambiente. Verifique a chave em Config.";
       setStreamText("");setMsgs(m=>[...m,{role:"assistant",text:`⚠️ ${msg}`,motor}]);setStatus("");
     }
     setLoading(false);
-  },[hist,tema,problema,loading,tipo,area,nivel,p,motor,geminiKey]);
+  },[hist,tema,problema,loading,tipo,area,nivel,p,motor,geminiKey,claudeKey]);
 
   // Busca jurisprudência
   async function buscar(){
@@ -3203,11 +3232,9 @@ function App() {
     const sys=buildSys(area,nivel,p);
     const prompt=`Pesquise e cite jurisprudência atualizada STF e STJ (2020-2025) sobre: ${bTermo}\n\nPara cada precedente: número, tribunal, relator, turma, data, ementa resumida e tese. Mínimo 5 precedentes. Se não tiver certeza, use "o STJ tem decidido que..." — nunca invente.`;
     try {
-      let text;
-      if(motor==="gemini"&&geminiKey?.trim()){text=await chamarGemini([{role:"user",content:prompt}],sys,geminiKey,()=>{},p=>setBResult(p));}
-      else{text=await chamarClaudeStream([{role:"user",content:prompt}],sys,p=>setBResult(p),()=>{});}
+      const text=await chamarIA([{role:"user",content:prompt}],sys,p=>setBResult(p),()=>{},{motor,geminiKey,claudeKey});
       setBResult(text||"");
-    } catch(e){let msg=e.message;if(msg.includes("Failed to fetch"))msg="Gemini bloqueado. Mude para Claude.";setBResult("⚠️ "+msg);}
+    } catch(e){let msg=e.message;if(msg.includes("Failed to fetch"))msg="IA bloqueada. Verifique o motor ativo em Config.";setBResult("⚠️ "+msg);}
     setBLoad(false);
   }
 
@@ -3219,7 +3246,7 @@ function App() {
     const sys=`Você é especialista em pesquisa jurídica acadêmica e normas ABNT. Área: ${area}. Responda sempre em português. Jamais invente referências, autores ou obras específicas.`;
     const prompt=buildBiblioPrompt(biblioModo,termo,area);
     try {
-      const text=await chamarClaudeStream([{role:"user",content:prompt}],sys,partial=>setBiblioStream(partial),()=>{});
+      const text=await chamarIA([{role:"user",content:prompt}],sys,partial=>setBiblioStream(partial),()=>{},{motor,geminiKey,claudeKey});
       setBiblioStream("");setBiblioResult(text||"");
     } catch(e){setBiblioStream("");setBiblioResult("⚠️ "+e.message);}
     setBiblioLoading(false);
@@ -3285,7 +3312,7 @@ function App() {
       <div style={{background:"linear-gradient(90deg,#08122a,#0f1a33,#1a2744)",padding:"9px 16px",display:"flex",alignItems:"center",gap:10,borderBottom:`2px solid ${G}`,flexShrink:0}}>
         <div style={{width:36,height:36,borderRadius:"50%",border:`2px solid ${G}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,background:"rgba(201,168,76,.1)",flexShrink:0}}>⚖️</div>
         <div style={{flex:1,minWidth:0}}>
-          <div style={{fontWeight:700,fontSize:15,color:"white",lineHeight:1.2}}>Jur<span style={{color:G}}>Edit</span>Pro <span style={{fontSize:8,fontFamily:"monospace",color:"rgba(201,168,76,.7)",marginLeft:5,letterSpacing:".1em",fontWeight:400}}>EXCELLENCE v5 · FASE 5 COMPLETA</span></div>
+          <div style={{fontWeight:700,fontSize:15,color:"white",lineHeight:1.2}}>Jur<span style={{color:G}}>Edit</span>Pro <span style={{fontSize:8,fontFamily:"monospace",color:"rgba(201,168,76,.7)",marginLeft:5,letterSpacing:".1em",fontWeight:400}}>EXCELLENCE v6 · FREE-FIRST · GEMINI+CLAUDE</span></div>
           <div style={{fontSize:8,color:"rgba(255,255,255,.3)",letterSpacing:".07em",textTransform:"uppercase",fontFamily:"monospace",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.nome||"Redação jurídica · streaming · OAI-PMH · LexML · ABNT · bibliotecas · sessões"}</div>
         </div>
         <div style={{display:"flex",background:"rgba(255,255,255,.07)",border:"1px solid rgba(255,255,255,.12)",borderRadius:6,overflow:"hidden",flexShrink:0}}>
@@ -3333,8 +3360,9 @@ function App() {
           <div style={{background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",borderRadius:6,padding:"8px 12px",minWidth:180}}>
             <div style={{fontSize:9,color:G,fontFamily:"monospace",marginBottom:5,textTransform:"uppercase",letterSpacing:".08em"}}>Motor ativo</div>
             {motor==="claude"?(<div><div style={{fontSize:12,color:claudeKey?"#4ade80":"#facc15",fontWeight:700}}>{claudeKey?"✓ Claude Sonnet 4 · BYOK":"⚡ Claude Sonnet 4 · streaming"}</div><div style={{fontSize:9,color:"rgba(255,255,255,.4)",fontFamily:"monospace",marginTop:2}}>{claudeKey?"Chave própria ativa.":"Sem chave — funciona no claude.ai."}</div></div>):(
-              <div><div style={{fontSize:12,color:geminiKey?"#4ade80":"#fca5a5",fontWeight:700}}>{geminiKey?"✓ Gemini 2.5 Flash":"⚠ Sem chave"}</div><div style={{fontSize:9,color:"rgba(255,255,255,.4)",fontFamily:"monospace",marginTop:2}}>Requer chave Google AI Studio.</div></div>
+              <div><div style={{fontSize:12,color:geminiKey?"#4ade80":"#fca5a5",fontWeight:700}}>{geminiKey?"✓ Gemini 2.5 Flash · FREE":"⚠ Sem chave Gemini"}</div><div style={{fontSize:9,color:"rgba(255,255,255,.4)",fontFamily:"monospace",marginTop:2}}>{geminiKey?"FREE · gratuito Google AI Studio":"Cole a chave abaixo → gratuita"}</div></div>
             )}
+            {!geminiKey&&!claudeKey&&<div style={{fontSize:8,color:"#fbbf24",fontFamily:"monospace",marginTop:4,padding:"3px 6px",background:"rgba(251,191,36,.1)",borderRadius:3}}>💡 Cole a chave Gemini para rodar FREE no GitHub Pages</div>}
           </div>
           <div style={{minWidth:220}}>
             <div style={{fontSize:9,color:"#818cf8",fontFamily:"monospace",marginBottom:5,textTransform:"uppercase",letterSpacing:".08em"}}>🔑 Chave Anthropic (Claude — GitHub Pages)</div>
@@ -4382,6 +4410,9 @@ function App() {
           darkMode={darkMode}
           area={area}
           proj={p}
+          geminiKey={geminiKey}
+          claudeKey={claudeKey}
+          motor={motor}
         />
       )}
     </div>
